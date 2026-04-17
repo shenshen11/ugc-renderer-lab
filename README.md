@@ -51,15 +51,47 @@ The first milestone is not to build a full commercial game engine. Instead, the 
 
 ## Current Status
 
-Project planning and repository bootstrap are in progress.
+Repository bootstrap is complete.
 
-The next development step is to scaffold:
+Current milestone:
 
-- `CMakeLists.txt`
-- `engine/` core library
-- `sandbox/` executable
-- Windows window creation
-- D3D12 device and swapchain initialization
+- `CMake` project scaffold
+- `engine/` static library
+- `sandbox/` Win32 executable
+- Windows window creation and message loop
+- D3D12 device, swapchain, RTV heap, and frame clear path
+- Runtime HLSL compilation via `D3DCompileFromFile`
+- A first colored triangle pipeline and vertex buffer
+- A reusable `ShaderCompiler` helper for runtime shader loading
+- A first `GpuBuffer` abstraction with default-heap upload staging
+
+## Build Requirements
+
+- Windows 10/11
+- CMake 3.26+
+- Visual Studio 2022 Build Tools or Visual Studio 2022 with C++ workload
+- Windows SDK with D3D12 headers and libraries
+
+## Build
+
+```powershell
+cmake --preset vs2022-debug
+cmake --build --preset build-debug
+```
+
+Output executable:
+
+```text
+build/vs2022-debug/sandbox/Debug/ugc_renderer_sandbox.exe
+```
+
+## Near-Term Roadmap
+
+- Introduce core utility modules and app lifecycle cleanup
+- Start the D3D12 abstraction layer for resources and descriptors
+- Add ImGui integration for runtime inspection
+- Add descriptor allocation and a first constant-buffer path
+- Add shader reload and pipeline reload workflow
 
 ## License
 
