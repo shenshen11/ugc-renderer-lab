@@ -45,6 +45,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateSwapChain();
     CreateDescriptorHeap();
     CreateRenderTargets();
+    CreateDepthStencil();
     CreateFence();
     CreatePipeline();
     CreateSceneGeometry();
@@ -82,11 +83,13 @@ void D3D12Renderer::Render()
     commandList_->RSSetScissorRects(1, &scissorRect_);
 
     const D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvAllocation_->GetCpuHandle(frameIndex_);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = dsvAllocation_->GetCpuHandle();
 
-    commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+    commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
 
     constexpr std::array<float, 4> clearColor = {0.07f, 0.12f, 0.18f, 1.0f};
     commandList_->ClearRenderTargetView(rtvHandle, clearColor.data(), 0, nullptr);
+    commandList_->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     ID3D12DescriptorHeap* descriptorHeaps[] = {cbvAllocator_->GetHeap()};
     commandList_->SetDescriptorHeaps(static_cast<UINT>(std::size(descriptorHeaps)), descriptorHeaps);
     commandList_->SetGraphicsRootSignature(rootSignature_.Get());
@@ -132,6 +135,7 @@ void D3D12Renderer::Resize(const std::uint32_t width, const std::uint32_t height
     {
         renderTarget.Reset();
     }
+    depthStencil_.Reset();
 
     DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
     ThrowIfFailed(swapChain_->GetDesc(&swapChainDesc), "IDXGISwapChain::GetDesc");
@@ -147,6 +151,7 @@ void D3D12Renderer::Resize(const std::uint32_t width, const std::uint32_t height
     frameIndex_ = swapChain_->GetCurrentBackBufferIndex();
     frameFenceValues_.fill(fence_->GetCompletedValue());
     CreateRenderTargets();
+    CreateDepthStencil();
     UpdateViewport(width, height);
 }
 
@@ -283,6 +288,10 @@ void D3D12Renderer::CreateDescriptorHeap()
     rtvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kFrameCount, false);
     rtvAllocation_ = std::make_unique<DescriptorAllocation>(rtvAllocator_->Allocate(kFrameCount));
 
+    dsvAllocator_ = std::make_unique<DescriptorAllocator>();
+    dsvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, false);
+    dsvAllocation_ = std::make_unique<DescriptorAllocation>(dsvAllocator_->Allocate(1));
+
     cbvAllocator_ = std::make_unique<DescriptorAllocator>();
     cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16, true);
 }
@@ -294,6 +303,54 @@ void D3D12Renderer::CreateRenderTargets()
         ThrowIfFailed(swapChain_->GetBuffer(index, IID_PPV_ARGS(&renderTargets_[index])), "IDXGISwapChain::GetBuffer");
         device_->CreateRenderTargetView(renderTargets_[index].Get(), nullptr, rtvAllocation_->GetCpuHandle(index));
     }
+}
+
+void D3D12Renderer::CreateDepthStencil()
+{
+    const std::uint32_t width = std::max(window_.GetClientWidth(), 1u);
+    const std::uint32_t height = std::max(window_.GetClientHeight(), 1u);
+
+    D3D12_HEAP_PROPERTIES heapProperties = {};
+    heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heapProperties.CreationNodeMask = 1;
+    heapProperties.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resourceDesc.Alignment = 0;
+    resourceDesc.Width = width;
+    resourceDesc.Height = height;
+    resourceDesc.DepthOrArraySize = 1;
+    resourceDesc.MipLevels = 1;
+    resourceDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.SampleDesc.Quality = 0;
+    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+    clearValue.DepthStencil.Depth = 1.0f;
+    clearValue.DepthStencil.Stencil = 0;
+
+    ThrowIfFailed(
+        device_->CreateCommittedResource(
+            &heapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &resourceDesc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            &clearValue,
+            IID_PPV_ARGS(&depthStencil_)),
+        "ID3D12Device::CreateCommittedResource(depth stencil)");
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilViewDesc = {};
+    depthStencilViewDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    depthStencilViewDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    depthStencilViewDesc.Flags = D3D12_DSV_FLAG_NONE;
+
+    device_->CreateDepthStencilView(depthStencil_.Get(), &depthStencilViewDesc, dsvAllocation_->GetCpuHandle());
 }
 
 void D3D12Renderer::CreateFence()
@@ -407,12 +464,15 @@ void D3D12Renderer::CreatePipeline()
     pipelineStateDesc.BlendState = blendState;
     pipelineStateDesc.SampleMask = UINT_MAX;
     pipelineStateDesc.RasterizerState = rasterizerState;
-    pipelineStateDesc.DepthStencilState.DepthEnable = FALSE;
+    pipelineStateDesc.DepthStencilState.DepthEnable = TRUE;
+    pipelineStateDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pipelineStateDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
     pipelineStateDesc.DepthStencilState.StencilEnable = FALSE;
     pipelineStateDesc.InputLayout = {inputElements, static_cast<UINT>(std::size(inputElements))};
     pipelineStateDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pipelineStateDesc.NumRenderTargets = 1;
     pipelineStateDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pipelineStateDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pipelineStateDesc.SampleDesc.Count = 1;
 
     ThrowIfFailed(
@@ -476,8 +536,11 @@ void D3D12Renderer::CreateRenderItems()
         renderItems_.push_back(std::move(renderItem));
     };
 
-    createRenderItem({-0.42f, 0.0f, 0.0f}, {1.0f, 0.75f, 0.75f, 1.0f}, 0.0f, 0.9f);
-    createRenderItem({0.42f, 0.0f, 0.0f}, {0.75f, 0.85f, 1.0f, 1.0f}, DirectX::XM_PIDIV4, -1.25f);
+    createRenderItem({-0.18f, 0.0f, 0.35f}, {1.0f, 0.75f, 0.75f, 1.0f}, 0.0f, 0.9f);
+    renderItems_.back().scale = {1.15f, 1.15f, 1.0f};
+
+    createRenderItem({0.16f, 0.0f, 0.95f}, {0.75f, 0.85f, 1.0f, 1.0f}, DirectX::XM_PIDIV4, -1.25f);
+    renderItems_.back().scale = {1.8f, 1.8f, 1.0f};
 }
 
 void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
@@ -489,12 +552,23 @@ void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
     const auto now = std::chrono::steady_clock::now();
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
-    const DirectX::XMMATRIX aspectCorrection = DirectX::XMMatrixScaling(1.0f / aspect, 1.0f, 1.0f);
+    const DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
+        DirectX::XMLoadFloat3(&camera_.position),
+        DirectX::XMLoadFloat3(&camera_.target),
+        DirectX::XMLoadFloat3(&camera_.up));
+    const DirectX::XMMATRIX projection = DirectX::XMMatrixPerspectiveFovLH(
+        camera_.verticalFovRadians,
+        aspect,
+        camera_.nearPlane,
+        camera_.farPlane);
+    const DirectX::XMMATRIX scale =
+        DirectX::XMMatrixScaling(renderItem.scale.x, renderItem.scale.y, renderItem.scale.z);
     const DirectX::XMMATRIX rotation =
         DirectX::XMMatrixRotationZ(renderItem.rotationOffset + elapsedSeconds * renderItem.rotationSpeed);
     const DirectX::XMMATRIX translation =
         DirectX::XMMatrixTranslation(renderItem.translation.x, renderItem.translation.y, renderItem.translation.z);
-    const DirectX::XMMATRIX transform = aspectCorrection * translation * rotation;
+    const DirectX::XMMATRIX world = scale * rotation * translation;
+    const DirectX::XMMATRIX transform = world * view * projection;
 
     SceneConstants constants = {};
     DirectX::XMStoreFloat4x4(&constants.mvp, DirectX::XMMatrixTranspose(transform));

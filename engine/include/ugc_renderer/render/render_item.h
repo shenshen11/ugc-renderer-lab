@@ -17,6 +17,7 @@ struct RenderItem
     Mesh* mesh = nullptr;
     Material material = {};
     DirectX::XMFLOAT3 translation = {0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT3 scale = {1.0f, 1.0f, 1.0f};
     float rotationOffset = 0.0f;
     float rotationSpeed = 1.0f;
     std::unique_ptr<ConstantBuffer> constantBuffer;

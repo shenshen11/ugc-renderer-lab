@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include "ugc_renderer/render/camera.h"
 #include "ugc_renderer/render/render_item.h"
 
 #include <array>
@@ -44,6 +45,7 @@ private:
     void CreateSwapChain();
     void CreateDescriptorHeap();
     void CreateRenderTargets();
+    void CreateDepthStencil();
     void CreateFence();
     void CreatePipeline();
     void CreateSceneGeometry();
@@ -66,14 +68,18 @@ private:
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList_;
     std::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>, kFrameCount> commandAllocators_;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kFrameCount> renderTargets_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> depthStencil_;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineState_;
     std::unique_ptr<DescriptorAllocator> rtvAllocator_;
+    std::unique_ptr<DescriptorAllocator> dsvAllocator_;
     std::unique_ptr<DescriptorAllocator> cbvAllocator_;
     std::unique_ptr<DescriptorAllocation> rtvAllocation_;
+    std::unique_ptr<DescriptorAllocation> dsvAllocation_;
     std::unique_ptr<Mesh> mesh_;
     std::vector<RenderItem> renderItems_;
+    Camera camera_ = {};
 
     std::array<std::uint64_t, kFrameCount> frameFenceValues_ = {};
     std::uint64_t nextFenceValue_ = 1;

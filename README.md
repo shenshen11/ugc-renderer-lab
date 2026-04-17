@@ -68,6 +68,7 @@ Current milestone:
 - A constant buffer driven MVP transform for animated rendering
 - Indexed drawing with a first `Mesh` abstraction
 - Shared mesh rendering with multiple material-driven render items
+- Perspective camera, view-projection transform, and depth-buffered rendering
 
 ## Build Requirements
 
@@ -97,7 +98,8 @@ build/vs2022-debug/sandbox/Debug/ugc_renderer_sandbox.exe
 - Add descriptor allocation and a first constant-buffer path
 - Add shader reload and pipeline reload workflow
 - Add a mesh/material resource split suitable for glTF import
-- Add camera/view/projection constants and depth buffering
+- Add camera controls and a reusable scene graph transform path
+- Add texture SRV binding and material texture inputs
 
 ## License
 
