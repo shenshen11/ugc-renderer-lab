@@ -1,3 +1,8 @@
+cbuffer SceneConstants : register(b0)
+{
+    float4x4 mvp;
+}
+
 struct VSInput
 {
     float3 position : POSITION;
@@ -13,7 +18,7 @@ struct PSInput
 PSInput VSMain(VSInput input)
 {
     PSInput output;
-    output.position = float4(input.position, 1.0f);
+    output.position = mul(mvp, float4(input.position, 1.0f));
     output.color = input.color;
     return output;
 }

@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 
@@ -12,6 +13,9 @@
 
 namespace ugc_renderer
 {
+class ConstantBuffer;
+class DescriptorAllocation;
+class DescriptorAllocator;
 class GpuBuffer;
 class Window;
 
@@ -39,8 +43,10 @@ private:
     void CreateDescriptorHeap();
     void CreateRenderTargets();
     void CreateFence();
+    void CreateConstantBuffer();
     void CreateTrianglePipeline();
     void CreateTriangleGeometry();
+    void UpdateSceneConstants();
     std::uint64_t Signal();
     void WaitForFenceValue(std::uint64_t fenceValue);
     void ExecuteImmediateCommands();
@@ -55,20 +61,24 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Device> device_;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> commandQueue_;
     Microsoft::WRL::ComPtr<IDXGISwapChain4> swapChain_;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap_;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList_;
     std::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>, kFrameCount> commandAllocators_;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kFrameCount> renderTargets_;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineState_;
+    std::unique_ptr<DescriptorAllocator> rtvAllocator_;
+    std::unique_ptr<DescriptorAllocator> cbvAllocator_;
+    std::unique_ptr<DescriptorAllocation> rtvAllocation_;
+    std::unique_ptr<DescriptorAllocation> cbvAllocation_;
     std::unique_ptr<GpuBuffer> vertexBuffer_;
+    std::unique_ptr<ConstantBuffer> sceneConstantBuffer_;
 
     std::array<std::uint64_t, kFrameCount> fenceValues_ = {};
     HANDLE fenceEvent_ = nullptr;
     std::uint32_t frameIndex_ = 0;
-    UINT rtvDescriptorSize_ = 0;
     D3D12_VIEWPORT viewport_ = {};
     D3D12_RECT scissorRect_ = {};
+    std::chrono::steady_clock::time_point startTime_ = std::chrono::steady_clock::now();
 };
 } // namespace ugc_renderer

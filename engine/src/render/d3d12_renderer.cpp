@@ -1,3 +1,5 @@
+#include "ugc_renderer/render/constant_buffer.h"
+#include "ugc_renderer/render/descriptor_allocator.h"
 #include "ugc_renderer/render/d3d12_renderer.h"
 
 #include "ugc_renderer/core/logger.h"
@@ -6,9 +8,13 @@
 #include "ugc_renderer/render/gpu_buffer.h"
 #include "ugc_renderer/render/shader_compiler.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <span>
 #include <string>
+
+#include <DirectXMath.h>
 
 namespace ugc_renderer
 {
@@ -20,6 +26,11 @@ struct Vertex
 {
     float position[3];
     float color[4];
+};
+
+struct SceneConstants
+{
+    DirectX::XMFLOAT4X4 mvp;
 };
 } // namespace
 
@@ -34,6 +45,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateDescriptorHeap();
     CreateRenderTargets();
     CreateFence();
+    CreateConstantBuffer();
     CreateTrianglePipeline();
     CreateTriangleGeometry();
     UpdateViewport(window_.GetClientWidth(), window_.GetClientHeight());
@@ -56,6 +68,7 @@ void D3D12Renderer::Render()
     auto& commandAllocator = commandAllocators_[frameIndex_];
     ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
     ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
+    UpdateSceneConstants();
 
     D3D12_RESOURCE_BARRIER toRenderTarget = {};
     toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -68,15 +81,17 @@ void D3D12Renderer::Render()
     commandList_->RSSetViewports(1, &viewport_);
     commandList_->RSSetScissorRects(1, &scissorRect_);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += static_cast<SIZE_T>(frameIndex_) * static_cast<SIZE_T>(rtvDescriptorSize_);
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvAllocation_->GetCpuHandle(frameIndex_);
 
     commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
     constexpr std::array<float, 4> clearColor = {0.07f, 0.12f, 0.18f, 1.0f};
     commandList_->ClearRenderTargetView(rtvHandle, clearColor.data(), 0, nullptr);
+    ID3D12DescriptorHeap* descriptorHeaps[] = {cbvAllocator_->GetHeap()};
+    commandList_->SetDescriptorHeaps(static_cast<UINT>(std::size(descriptorHeaps)), descriptorHeaps);
     commandList_->SetGraphicsRootSignature(rootSignature_.Get());
     commandList_->SetPipelineState(pipelineState_.Get());
+    commandList_->SetGraphicsRootDescriptorTable(0, cbvAllocation_->GetGpuHandle());
     commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     const auto& vertexBufferView = vertexBuffer_->GetVertexBufferView();
     commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -255,24 +270,21 @@ void D3D12Renderer::CreateSwapChain()
 
 void D3D12Renderer::CreateDescriptorHeap()
 {
-    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    heapDesc.NumDescriptors = kFrameCount;
-    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    rtvAllocator_ = std::make_unique<DescriptorAllocator>();
+    rtvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kFrameCount, false);
+    rtvAllocation_ = std::make_unique<DescriptorAllocation>(rtvAllocator_->Allocate(kFrameCount));
 
-    ThrowIfFailed(device_->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap_)), "ID3D12Device::CreateDescriptorHeap");
-    rtvDescriptorSize_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    cbvAllocator_ = std::make_unique<DescriptorAllocator>();
+    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true);
+    cbvAllocation_ = std::make_unique<DescriptorAllocation>(cbvAllocator_->Allocate(1));
 }
 
 void D3D12Renderer::CreateRenderTargets()
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
-
     for (std::uint32_t index = 0; index < kFrameCount; ++index)
     {
         ThrowIfFailed(swapChain_->GetBuffer(index, IID_PPV_ARGS(&renderTargets_[index])), "IDXGISwapChain::GetBuffer");
-        device_->CreateRenderTargetView(renderTargets_[index].Get(), nullptr, rtvHandle);
-        rtvHandle.ptr += static_cast<SIZE_T>(rtvDescriptorSize_);
+        device_->CreateRenderTargetView(renderTargets_[index].Get(), nullptr, rtvAllocation_->GetCpuHandle(index));
     }
 }
 
@@ -288,15 +300,40 @@ void D3D12Renderer::CreateFence()
     }
 }
 
+void D3D12Renderer::CreateConstantBuffer()
+{
+    sceneConstantBuffer_ = std::make_unique<ConstantBuffer>();
+    sceneConstantBuffer_->Initialize(*device_.Get(), sizeof(SceneConstants));
+
+    D3D12_CONSTANT_BUFFER_VIEW_DESC constantBufferViewDesc = {};
+    constantBufferViewDesc.BufferLocation = sceneConstantBuffer_->GetGpuVirtualAddress();
+    constantBufferViewDesc.SizeInBytes = sceneConstantBuffer_->GetAlignedSizeInBytes();
+
+    device_->CreateConstantBufferView(&constantBufferViewDesc, cbvAllocation_->GetCpuHandle());
+}
+
 void D3D12Renderer::CreateTrianglePipeline()
 {
     const auto shaderPath = ShaderCompiler::ResolveShaderPath(L"triangle.hlsl");
     const auto vertexShader = ShaderCompiler::CompileFromFile(shaderPath, "VSMain", "vs_5_0");
     const auto pixelShader = ShaderCompiler::CompileFromFile(shaderPath, "PSMain", "ps_5_0");
 
+    D3D12_DESCRIPTOR_RANGE descriptorRange = {};
+    descriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    descriptorRange.NumDescriptors = 1;
+    descriptorRange.BaseShaderRegister = 0;
+    descriptorRange.RegisterSpace = 0;
+    descriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER rootParameter = {};
+    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameter.DescriptorTable.NumDescriptorRanges = 1;
+    rootParameter.DescriptorTable.pDescriptorRanges = &descriptorRange;
+    rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
     D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
-    rootSignatureDesc.NumParameters = 0;
-    rootSignatureDesc.pParameters = nullptr;
+    rootSignatureDesc.NumParameters = 1;
+    rootSignatureDesc.pParameters = &rootParameter;
     rootSignatureDesc.NumStaticSamplers = 0;
     rootSignatureDesc.pStaticSamplers = nullptr;
     rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -407,6 +444,24 @@ void D3D12Renderer::CreateTriangleGeometry()
 
     ExecuteImmediateCommands();
     vertexBuffer_->ReleaseUploadResource();
+}
+
+void D3D12Renderer::UpdateSceneConstants()
+{
+    const float width = static_cast<float>(std::max(window_.GetClientWidth(), 1u));
+    const float height = static_cast<float>(std::max(window_.GetClientHeight(), 1u));
+    const float aspect = width / height;
+
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+
+    const DirectX::XMMATRIX aspectCorrection = DirectX::XMMatrixScaling(1.0f / aspect, 1.0f, 1.0f);
+    const DirectX::XMMATRIX rotation = DirectX::XMMatrixRotationZ(elapsedSeconds * 0.8f);
+    const DirectX::XMMATRIX transform = rotation * aspectCorrection;
+
+    SceneConstants constants = {};
+    DirectX::XMStoreFloat4x4(&constants.mvp, DirectX::XMMatrixTranspose(transform));
+    sceneConstantBuffer_->Update(std::as_bytes(std::span {&constants, 1}));
 }
 
 std::uint64_t D3D12Renderer::Signal()
