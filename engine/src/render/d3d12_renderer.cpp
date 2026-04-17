@@ -7,13 +7,16 @@
 #include "ugc_renderer/platform/window.h"
 #include "ugc_renderer/render/mesh.h"
 #include "ugc_renderer/render/shader_compiler.h"
+#include "ugc_renderer/render/texture2d.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 #include <DirectXMath.h>
 
@@ -27,6 +30,7 @@ struct Vertex
 {
     float position[3];
     float color[4];
+    float texCoord[2];
 };
 
 struct SceneConstants
@@ -50,6 +54,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateFence();
     CreatePipeline();
     CreateSceneGeometry();
+    CreateProceduralTextures();
     CreateRenderItems();
     UpdateViewport(window_.GetClientWidth(), window_.GetClientHeight());
     Logger::Info("D3D12 renderer initialized.");
@@ -107,6 +112,9 @@ void D3D12Renderer::Render()
         UpdateRenderItemConstants(renderItem);
 
         commandList_->SetGraphicsRootDescriptorTable(0, renderItem.cbvAllocation.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            1,
+            textureSrvAllocations_[renderItem.material.textureIndex].GetGpuHandle());
         const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
         const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
         commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -378,24 +386,50 @@ void D3D12Renderer::CreatePipeline()
     const auto vertexShader = ShaderCompiler::CompileFromFile(shaderPath, "VSMain", "vs_5_0");
     const auto pixelShader = ShaderCompiler::CompileFromFile(shaderPath, "PSMain", "ps_5_0");
 
-    D3D12_DESCRIPTOR_RANGE descriptorRange = {};
-    descriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-    descriptorRange.NumDescriptors = 1;
-    descriptorRange.BaseShaderRegister = 0;
-    descriptorRange.RegisterSpace = 0;
-    descriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_DESCRIPTOR_RANGE cbvDescriptorRange = {};
+    cbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    cbvDescriptorRange.NumDescriptors = 1;
+    cbvDescriptorRange.BaseShaderRegister = 0;
+    cbvDescriptorRange.RegisterSpace = 0;
+    cbvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER rootParameter = {};
-    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rootParameter.DescriptorTable.NumDescriptorRanges = 1;
-    rootParameter.DescriptorTable.pDescriptorRanges = &descriptorRange;
-    rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_DESCRIPTOR_RANGE srvDescriptorRange = {};
+    srvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvDescriptorRange.NumDescriptors = 1;
+    srvDescriptorRange.BaseShaderRegister = 0;
+    srvDescriptorRange.RegisterSpace = 0;
+    srvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    std::array<D3D12_ROOT_PARAMETER, 2> rootParameters = {};
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[0].DescriptorTable.pDescriptorRanges = &cbvDescriptorRange;
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[1].DescriptorTable.pDescriptorRanges = &srvDescriptorRange;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC staticSampler = {};
+    staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    staticSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSampler.MipLODBias = 0.0f;
+    staticSampler.MaxAnisotropy = 1;
+    staticSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    staticSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    staticSampler.MinLOD = 0.0f;
+    staticSampler.MaxLOD = D3D12_FLOAT32_MAX;
+    staticSampler.ShaderRegister = 0;
+    staticSampler.RegisterSpace = 0;
+    staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
-    rootSignatureDesc.NumParameters = 1;
-    rootSignatureDesc.pParameters = &rootParameter;
-    rootSignatureDesc.NumStaticSamplers = 0;
-    rootSignatureDesc.pStaticSamplers = nullptr;
+    rootSignatureDesc.NumParameters = static_cast<UINT>(rootParameters.size());
+    rootSignatureDesc.pParameters = rootParameters.data();
+    rootSignatureDesc.NumStaticSamplers = 1;
+    rootSignatureDesc.pStaticSamplers = &staticSampler;
     rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> serializedRootSignature;
@@ -429,6 +463,7 @@ void D3D12Renderer::CreatePipeline()
     constexpr D3D12_INPUT_ELEMENT_DESC inputElements[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     D3D12_BLEND_DESC blendState = {};
@@ -489,10 +524,10 @@ void D3D12Renderer::CreatePipeline()
 void D3D12Renderer::CreateSceneGeometry()
 {
     constexpr std::array<Vertex, 4> vertices = {{
-        {{-0.28f, 0.28f, 0.0f}, {1.0f, 0.4f, 0.4f, 1.0f}},
-        {{0.28f, 0.28f, 0.0f}, {0.4f, 1.0f, 0.4f, 1.0f}},
-        {{0.28f, -0.28f, 0.0f}, {0.4f, 0.6f, 1.0f, 1.0f}},
-        {{-0.28f, -0.28f, 0.0f}, {1.0f, 0.9f, 0.3f, 1.0f}},
+        {{-0.28f, 0.28f, 0.0f}, {1.0f, 0.4f, 0.4f, 1.0f}, {0.0f, 0.0f}},
+        {{0.28f, 0.28f, 0.0f}, {0.4f, 1.0f, 0.4f, 1.0f}, {1.0f, 0.0f}},
+        {{0.28f, -0.28f, 0.0f}, {0.4f, 0.6f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+        {{-0.28f, -0.28f, 0.0f}, {1.0f, 0.9f, 0.3f, 1.0f}, {0.0f, 1.0f}},
     }};
     constexpr std::array<std::uint16_t, 6> indices = {0, 1, 2, 0, 2, 3};
 
@@ -512,6 +547,77 @@ void D3D12Renderer::CreateSceneGeometry()
 
     ExecuteImmediateCommands();
     mesh_->ReleaseUploadResources();
+}
+
+void D3D12Renderer::CreateProceduralTextures()
+{
+    constexpr std::uint32_t textureSize = 128;
+
+    auto makeRgba = [](const std::uint8_t r,
+                       const std::uint8_t g,
+                       const std::uint8_t b,
+                       const std::uint8_t a) -> std::uint32_t
+    {
+        return static_cast<std::uint32_t>(r) |
+               (static_cast<std::uint32_t>(g) << 8) |
+               (static_cast<std::uint32_t>(b) << 16) |
+               (static_cast<std::uint32_t>(a) << 24);
+    };
+
+    auto createTexture = [&](const std::vector<std::uint32_t>& pixels)
+    {
+        auto& commandAllocator = commandAllocators_[frameIndex_];
+        ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
+        ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
+
+        auto texture = std::make_unique<Texture2D>();
+        texture->Initialize(
+            *device_.Get(),
+            *commandList_.Get(),
+            textureSize,
+            textureSize,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            std::as_bytes(std::span(pixels)));
+
+        ExecuteImmediateCommands();
+
+        const DescriptorAllocation srvAllocation = cbvAllocator_->Allocate(1);
+        D3D12_SHADER_RESOURCE_VIEW_DESC shaderResourceViewDesc = {};
+        shaderResourceViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        shaderResourceViewDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        shaderResourceViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        shaderResourceViewDesc.Texture2D.MostDetailedMip = 0;
+        shaderResourceViewDesc.Texture2D.MipLevels = 1;
+        shaderResourceViewDesc.Texture2D.PlaneSlice = 0;
+        shaderResourceViewDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+        device_->CreateShaderResourceView(texture->GetResource(), &shaderResourceViewDesc, srvAllocation.GetCpuHandle());
+        texture->ReleaseUploadResource();
+
+        textureSrvAllocations_.push_back(srvAllocation);
+        textures_.push_back(std::move(texture));
+    };
+
+    std::vector<std::uint32_t> checkerPixels(textureSize * textureSize);
+    std::vector<std::uint32_t> stripePixels(textureSize * textureSize);
+    for (std::uint32_t y = 0; y < textureSize; ++y)
+    {
+        for (std::uint32_t x = 0; x < textureSize; ++x)
+        {
+            const std::uint32_t index = y * textureSize + x;
+            const bool checker = ((x / 16) + (y / 16)) % 2 == 0;
+            checkerPixels[index] = checker ? makeRgba(245, 245, 245, 255) : makeRgba(35, 35, 42, 255);
+
+            const std::uint8_t red = static_cast<std::uint8_t>(80 + (x * 175) / (textureSize - 1));
+            const std::uint8_t green = static_cast<std::uint8_t>(60 + (y * 155) / (textureSize - 1));
+            const bool stripe = ((x + y) / 12) % 2 == 0;
+            const std::uint8_t blue = stripe ? 245 : 120;
+            stripePixels[index] = makeRgba(red, green, blue, 255);
+        }
+    }
+
+    createTexture(checkerPixels);
+    createTexture(stripePixels);
 }
 
 void D3D12Renderer::CreateRenderItems()
@@ -543,9 +649,11 @@ void D3D12Renderer::CreateRenderItems()
     };
 
     createRenderItem({-0.18f, 0.0f, 0.35f}, {1.0f, 0.75f, 0.75f, 1.0f}, 0.0f, 0.9f);
+    renderItems_.back().material.textureIndex = 0;
     renderItems_.back().scale = {1.15f, 1.15f, 1.0f};
 
     createRenderItem({0.16f, 0.0f, 0.95f}, {0.75f, 0.85f, 1.0f, 1.0f}, DirectX::XM_PIDIV4, -1.25f);
+    renderItems_.back().material.textureIndex = 1;
     renderItems_.back().scale = {1.8f, 1.8f, 1.0f};
 }
 

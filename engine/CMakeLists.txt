@@ -10,6 +10,7 @@ set(UGC_RENDERER_ENGINE_SOURCES
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/mesh.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/d3d12_renderer.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/shader_compiler.cpp
+    ${UGC_RENDERER_ENGINE_ROOT}/src/render/texture2d.cpp
 )
 
 add_library(ugc_renderer_engine STATIC ${UGC_RENDERER_ENGINE_SOURCES})
