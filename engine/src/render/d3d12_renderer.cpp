@@ -31,6 +31,7 @@ struct Vertex
 struct SceneConstants
 {
     DirectX::XMFLOAT4X4 mvp;
+    DirectX::XMFLOAT4 baseColor;
 };
 } // namespace
 
@@ -45,9 +46,9 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateDescriptorHeap();
     CreateRenderTargets();
     CreateFence();
-    CreateConstantBuffer();
-    CreateTrianglePipeline();
-    CreateTriangleGeometry();
+    CreatePipeline();
+    CreateSceneGeometry();
+    CreateRenderItems();
     UpdateViewport(window_.GetClientWidth(), window_.GetClientHeight());
     Logger::Info("D3D12 renderer initialized.");
 }
@@ -68,7 +69,6 @@ void D3D12Renderer::Render()
     auto& commandAllocator = commandAllocators_[frameIndex_];
     ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
     ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
-    UpdateSceneConstants();
 
     D3D12_RESOURCE_BARRIER toRenderTarget = {};
     toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -91,13 +91,19 @@ void D3D12Renderer::Render()
     commandList_->SetDescriptorHeaps(static_cast<UINT>(std::size(descriptorHeaps)), descriptorHeaps);
     commandList_->SetGraphicsRootSignature(rootSignature_.Get());
     commandList_->SetPipelineState(pipelineState_.Get());
-    commandList_->SetGraphicsRootDescriptorTable(0, cbvAllocation_->GetGpuHandle());
     commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    const auto& vertexBufferView = mesh_->GetVertexBufferView();
-    const auto& indexBufferView = mesh_->GetIndexBufferView();
-    commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
-    commandList_->IASetIndexBuffer(&indexBufferView);
-    commandList_->DrawIndexedInstanced(mesh_->GetIndexCount(), 1, 0, 0, 0);
+
+    for (auto& renderItem : renderItems_)
+    {
+        UpdateRenderItemConstants(renderItem);
+
+        commandList_->SetGraphicsRootDescriptorTable(0, renderItem.cbvAllocation.GetGpuHandle());
+        const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
+        const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
+        commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
+        commandList_->IASetIndexBuffer(&indexBufferView);
+        commandList_->DrawIndexedInstanced(renderItem.mesh->GetIndexCount(), 1, 0, 0, 0);
+    }
 
     D3D12_RESOURCE_BARRIER toPresent = toRenderTarget;
     toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -278,8 +284,7 @@ void D3D12Renderer::CreateDescriptorHeap()
     rtvAllocation_ = std::make_unique<DescriptorAllocation>(rtvAllocator_->Allocate(kFrameCount));
 
     cbvAllocator_ = std::make_unique<DescriptorAllocator>();
-    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true);
-    cbvAllocation_ = std::make_unique<DescriptorAllocation>(cbvAllocator_->Allocate(1));
+    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16, true);
 }
 
 void D3D12Renderer::CreateRenderTargets()
@@ -304,19 +309,7 @@ void D3D12Renderer::CreateFence()
     }
 }
 
-void D3D12Renderer::CreateConstantBuffer()
-{
-    sceneConstantBuffer_ = std::make_unique<ConstantBuffer>();
-    sceneConstantBuffer_->Initialize(*device_.Get(), sizeof(SceneConstants));
-
-    D3D12_CONSTANT_BUFFER_VIEW_DESC constantBufferViewDesc = {};
-    constantBufferViewDesc.BufferLocation = sceneConstantBuffer_->GetGpuVirtualAddress();
-    constantBufferViewDesc.SizeInBytes = sceneConstantBuffer_->GetAlignedSizeInBytes();
-
-    device_->CreateConstantBufferView(&constantBufferViewDesc, cbvAllocation_->GetCpuHandle());
-}
-
-void D3D12Renderer::CreateTrianglePipeline()
+void D3D12Renderer::CreatePipeline()
 {
     const auto shaderPath = ShaderCompiler::ResolveShaderPath(L"triangle.hlsl");
     const auto vertexShader = ShaderCompiler::CompileFromFile(shaderPath, "VSMain", "vs_5_0");
@@ -333,7 +326,7 @@ void D3D12Renderer::CreateTrianglePipeline()
     rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameter.DescriptorTable.NumDescriptorRanges = 1;
     rootParameter.DescriptorTable.pDescriptorRanges = &descriptorRange;
-    rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
     rootSignatureDesc.NumParameters = 1;
@@ -427,13 +420,13 @@ void D3D12Renderer::CreateTrianglePipeline()
         "ID3D12Device::CreateGraphicsPipelineState");
 }
 
-void D3D12Renderer::CreateTriangleGeometry()
+void D3D12Renderer::CreateSceneGeometry()
 {
     constexpr std::array<Vertex, 4> vertices = {{
-        {{-0.35f, 0.35f, 0.0f}, {1.0f, 0.2f, 0.2f, 1.0f}},
-        {{0.35f, 0.35f, 0.0f}, {0.2f, 1.0f, 0.2f, 1.0f}},
-        {{0.35f, -0.35f, 0.0f}, {0.2f, 0.4f, 1.0f, 1.0f}},
-        {{-0.35f, -0.35f, 0.0f}, {1.0f, 0.9f, 0.2f, 1.0f}},
+        {{-0.28f, 0.28f, 0.0f}, {1.0f, 0.4f, 0.4f, 1.0f}},
+        {{0.28f, 0.28f, 0.0f}, {0.4f, 1.0f, 0.4f, 1.0f}},
+        {{0.28f, -0.28f, 0.0f}, {0.4f, 0.6f, 1.0f, 1.0f}},
+        {{-0.28f, -0.28f, 0.0f}, {1.0f, 0.9f, 0.3f, 1.0f}},
     }};
     constexpr std::array<std::uint16_t, 6> indices = {0, 1, 2, 0, 2, 3};
 
@@ -455,7 +448,39 @@ void D3D12Renderer::CreateTriangleGeometry()
     mesh_->ReleaseUploadResources();
 }
 
-void D3D12Renderer::UpdateSceneConstants()
+void D3D12Renderer::CreateRenderItems()
+{
+    renderItems_.clear();
+    renderItems_.reserve(2);
+
+    auto createRenderItem = [&](const DirectX::XMFLOAT3 translation,
+                                const DirectX::XMFLOAT4 baseColor,
+                                const float rotationOffset,
+                                const float rotationSpeed)
+    {
+        RenderItem renderItem = {};
+        renderItem.mesh = mesh_.get();
+        renderItem.material.baseColor = baseColor;
+        renderItem.translation = translation;
+        renderItem.rotationOffset = rotationOffset;
+        renderItem.rotationSpeed = rotationSpeed;
+        renderItem.constantBuffer = std::make_unique<ConstantBuffer>();
+        renderItem.constantBuffer->Initialize(*device_.Get(), sizeof(SceneConstants));
+        renderItem.cbvAllocation = cbvAllocator_->Allocate(1);
+
+        D3D12_CONSTANT_BUFFER_VIEW_DESC constantBufferViewDesc = {};
+        constantBufferViewDesc.BufferLocation = renderItem.constantBuffer->GetGpuVirtualAddress();
+        constantBufferViewDesc.SizeInBytes = renderItem.constantBuffer->GetAlignedSizeInBytes();
+        device_->CreateConstantBufferView(&constantBufferViewDesc, renderItem.cbvAllocation.GetCpuHandle());
+
+        renderItems_.push_back(std::move(renderItem));
+    };
+
+    createRenderItem({-0.42f, 0.0f, 0.0f}, {1.0f, 0.75f, 0.75f, 1.0f}, 0.0f, 0.9f);
+    createRenderItem({0.42f, 0.0f, 0.0f}, {0.75f, 0.85f, 1.0f, 1.0f}, DirectX::XM_PIDIV4, -1.25f);
+}
+
+void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
 {
     const float width = static_cast<float>(std::max(window_.GetClientWidth(), 1u));
     const float height = static_cast<float>(std::max(window_.GetClientHeight(), 1u));
@@ -465,12 +490,16 @@ void D3D12Renderer::UpdateSceneConstants()
     const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
 
     const DirectX::XMMATRIX aspectCorrection = DirectX::XMMatrixScaling(1.0f / aspect, 1.0f, 1.0f);
-    const DirectX::XMMATRIX rotation = DirectX::XMMatrixRotationZ(elapsedSeconds * 0.8f);
-    const DirectX::XMMATRIX transform = rotation * aspectCorrection;
+    const DirectX::XMMATRIX rotation =
+        DirectX::XMMatrixRotationZ(renderItem.rotationOffset + elapsedSeconds * renderItem.rotationSpeed);
+    const DirectX::XMMATRIX translation =
+        DirectX::XMMatrixTranslation(renderItem.translation.x, renderItem.translation.y, renderItem.translation.z);
+    const DirectX::XMMATRIX transform = aspectCorrection * translation * rotation;
 
     SceneConstants constants = {};
     DirectX::XMStoreFloat4x4(&constants.mvp, DirectX::XMMatrixTranspose(transform));
-    sceneConstantBuffer_->Update(std::as_bytes(std::span {&constants, 1}));
+    constants.baseColor = renderItem.material.baseColor;
+    renderItem.constantBuffer->Update(std::as_bytes(std::span {&constants, 1}));
 }
 
 std::uint64_t D3D12Renderer::Signal()

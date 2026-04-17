@@ -2,10 +2,13 @@
 
 #include <Windows.h>
 
+#include "ugc_renderer/render/render_item.h"
+
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -13,7 +16,6 @@
 
 namespace ugc_renderer
 {
-class ConstantBuffer;
 class DescriptorAllocation;
 class DescriptorAllocator;
 class Mesh;
@@ -43,10 +45,10 @@ private:
     void CreateDescriptorHeap();
     void CreateRenderTargets();
     void CreateFence();
-    void CreateConstantBuffer();
-    void CreateTrianglePipeline();
-    void CreateTriangleGeometry();
-    void UpdateSceneConstants();
+    void CreatePipeline();
+    void CreateSceneGeometry();
+    void CreateRenderItems();
+    void UpdateRenderItemConstants(RenderItem& renderItem);
     std::uint64_t Signal();
     void WaitForFenceValue(std::uint64_t fenceValue);
     void ExecuteImmediateCommands();
@@ -70,9 +72,8 @@ private:
     std::unique_ptr<DescriptorAllocator> rtvAllocator_;
     std::unique_ptr<DescriptorAllocator> cbvAllocator_;
     std::unique_ptr<DescriptorAllocation> rtvAllocation_;
-    std::unique_ptr<DescriptorAllocation> cbvAllocation_;
     std::unique_ptr<Mesh> mesh_;
-    std::unique_ptr<ConstantBuffer> sceneConstantBuffer_;
+    std::vector<RenderItem> renderItems_;
 
     std::array<std::uint64_t, kFrameCount> frameFenceValues_ = {};
     std::uint64_t nextFenceValue_ = 1;

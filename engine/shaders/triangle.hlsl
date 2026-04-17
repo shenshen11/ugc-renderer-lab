@@ -1,6 +1,7 @@
 cbuffer SceneConstants : register(b0)
 {
     float4x4 mvp;
+    float4 baseColor;
 }
 
 struct VSInput
@@ -25,5 +26,5 @@ PSInput VSMain(VSInput input)
 
 float4 PSMain(PSInput input) : SV_TARGET
 {
-    return input.color;
+    return input.color * baseColor;
 }
