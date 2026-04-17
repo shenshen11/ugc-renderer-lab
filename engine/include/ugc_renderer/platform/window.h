@@ -25,6 +25,7 @@ public:
     std::uint32_t GetClientWidth() const noexcept;
     std::uint32_t GetClientHeight() const noexcept;
     bool IsMinimized() const noexcept;
+    bool IsInSizeMove() const noexcept;
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
@@ -40,5 +41,6 @@ private:
     std::uint32_t height_ = 0;
     bool resized_ = false;
     bool minimized_ = false;
+    bool inSizeMove_ = false;
 };
 } // namespace ugc_renderer

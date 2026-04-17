@@ -5,7 +5,7 @@
 #include "ugc_renderer/core/logger.h"
 #include "ugc_renderer/core/throw_if_failed.h"
 #include "ugc_renderer/platform/window.h"
-#include "ugc_renderer/render/gpu_buffer.h"
+#include "ugc_renderer/render/mesh.h"
 #include "ugc_renderer/render/shader_compiler.h"
 
 #include <algorithm>
@@ -93,9 +93,11 @@ void D3D12Renderer::Render()
     commandList_->SetPipelineState(pipelineState_.Get());
     commandList_->SetGraphicsRootDescriptorTable(0, cbvAllocation_->GetGpuHandle());
     commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    const auto& vertexBufferView = vertexBuffer_->GetVertexBufferView();
+    const auto& vertexBufferView = mesh_->GetVertexBufferView();
+    const auto& indexBufferView = mesh_->GetIndexBufferView();
     commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
-    commandList_->DrawInstanced(3, 1, 0, 0);
+    commandList_->IASetIndexBuffer(&indexBufferView);
+    commandList_->DrawIndexedInstanced(mesh_->GetIndexCount(), 1, 0, 0, 0);
 
     D3D12_RESOURCE_BARRIER toPresent = toRenderTarget;
     toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -137,6 +139,7 @@ void D3D12Renderer::Resize(const std::uint32_t width, const std::uint32_t height
         "IDXGISwapChain::ResizeBuffers");
 
     frameIndex_ = swapChain_->GetCurrentBackBufferIndex();
+    frameFenceValues_.fill(fence_->GetCompletedValue());
     CreateRenderTargets();
     UpdateViewport(width, height);
 }
@@ -291,7 +294,8 @@ void D3D12Renderer::CreateRenderTargets()
 void D3D12Renderer::CreateFence()
 {
     ThrowIfFailed(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "ID3D12Device::CreateFence");
-    fenceValues_[frameIndex_] = 1;
+    frameFenceValues_.fill(0);
+    nextFenceValue_ = 1;
 
     fenceEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (fenceEvent_ == nullptr)
@@ -425,25 +429,30 @@ void D3D12Renderer::CreateTrianglePipeline()
 
 void D3D12Renderer::CreateTriangleGeometry()
 {
-    constexpr std::array<Vertex, 3> vertices = {{
-        {{0.0f, 0.35f, 0.0f}, {1.0f, 0.2f, 0.2f, 1.0f}},
-        {{0.35f, -0.35f, 0.0f}, {0.2f, 1.0f, 0.2f, 1.0f}},
-        {{-0.35f, -0.35f, 0.0f}, {0.2f, 0.4f, 1.0f, 1.0f}},
+    constexpr std::array<Vertex, 4> vertices = {{
+        {{-0.35f, 0.35f, 0.0f}, {1.0f, 0.2f, 0.2f, 1.0f}},
+        {{0.35f, 0.35f, 0.0f}, {0.2f, 1.0f, 0.2f, 1.0f}},
+        {{0.35f, -0.35f, 0.0f}, {0.2f, 0.4f, 1.0f, 1.0f}},
+        {{-0.35f, -0.35f, 0.0f}, {1.0f, 0.9f, 0.2f, 1.0f}},
     }};
+    constexpr std::array<std::uint16_t, 6> indices = {0, 1, 2, 0, 2, 3};
 
     auto& commandAllocator = commandAllocators_[frameIndex_];
     ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
     ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
 
-    vertexBuffer_ = std::make_unique<GpuBuffer>();
-    vertexBuffer_->InitializeVertexBuffer(
+    mesh_ = std::make_unique<Mesh>();
+    mesh_->Initialize(
         *device_.Get(),
         *commandList_.Get(),
         std::as_bytes(std::span(vertices)),
-        sizeof(Vertex));
+        sizeof(Vertex),
+        std::as_bytes(std::span(indices)),
+        DXGI_FORMAT_R16_UINT,
+        static_cast<std::uint32_t>(indices.size()));
 
     ExecuteImmediateCommands();
-    vertexBuffer_->ReleaseUploadResource();
+    mesh_->ReleaseUploadResources();
 }
 
 void D3D12Renderer::UpdateSceneConstants()
@@ -466,9 +475,8 @@ void D3D12Renderer::UpdateSceneConstants()
 
 std::uint64_t D3D12Renderer::Signal()
 {
-    const std::uint64_t fenceValue = fenceValues_[frameIndex_];
+    const std::uint64_t fenceValue = nextFenceValue_++;
     ThrowIfFailed(commandQueue_->Signal(fence_.Get(), fenceValue), "ID3D12CommandQueue::Signal");
-    ++fenceValues_[frameIndex_];
     return fenceValue;
 }
 
@@ -510,19 +518,9 @@ void D3D12Renderer::UpdateViewport(const std::uint32_t width, const std::uint32_
 
 void D3D12Renderer::MoveToNextFrame()
 {
-    const std::uint64_t currentFenceValue = fenceValues_[frameIndex_];
-    ThrowIfFailed(commandQueue_->Signal(fence_.Get(), currentFenceValue), "ID3D12CommandQueue::Signal");
+    frameFenceValues_[frameIndex_] = Signal();
 
     frameIndex_ = swapChain_->GetCurrentBackBufferIndex();
-
-    if (fence_->GetCompletedValue() < fenceValues_[frameIndex_])
-    {
-        ThrowIfFailed(
-            fence_->SetEventOnCompletion(fenceValues_[frameIndex_], fenceEvent_),
-            "ID3D12Fence::SetEventOnCompletion");
-        WaitForSingleObject(fenceEvent_, INFINITE);
-    }
-
-    fenceValues_[frameIndex_] = currentFenceValue + 1;
+    WaitForFenceValue(frameFenceValues_[frameIndex_]);
 }
 } // namespace ugc_renderer

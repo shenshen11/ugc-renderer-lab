@@ -102,6 +102,11 @@ bool Window::IsMinimized() const noexcept
     return minimized_;
 }
 
+bool Window::IsInSizeMove() const noexcept
+{
+    return inSizeMove_;
+}
+
 LRESULT CALLBACK Window::WndProc(const HWND hwnd, const UINT message, const WPARAM wparam, const LPARAM lparam)
 {
     Window* window = nullptr;
@@ -142,6 +147,16 @@ LRESULT Window::HandleMessage(const UINT message, const WPARAM wparam, const LPA
         height_ = static_cast<std::uint32_t>(HIWORD(lparam));
         minimized_ = (wparam == SIZE_MINIMIZED);
 
+        if (!minimized_ && !inSizeMove_ && width_ > 0 && height_ > 0)
+        {
+            resized_ = true;
+        }
+        return 0;
+    case WM_ENTERSIZEMOVE:
+        inSizeMove_ = true;
+        return 0;
+    case WM_EXITSIZEMOVE:
+        inSizeMove_ = false;
         if (!minimized_ && width_ > 0 && height_ > 0)
         {
             resized_ = true;

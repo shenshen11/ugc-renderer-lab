@@ -37,11 +37,11 @@ D3D12_RESOURCE_DESC CreateBufferResourceDesc(const std::size_t sizeInBytes)
 }
 } // namespace
 
-void GpuBuffer::InitializeVertexBuffer(
+void GpuBuffer::Initialize(
     ID3D12Device& device,
     ID3D12GraphicsCommandList& commandList,
     const std::span<const std::byte> initialData,
-    const std::uint32_t strideInBytes)
+    const D3D12_RESOURCE_STATES finalState)
 {
     const auto defaultHeapProperties = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
     const auto uploadHeapProperties = CreateHeapProperties(D3D12_HEAP_TYPE_UPLOAD);
@@ -79,13 +79,35 @@ void GpuBuffer::InitializeVertexBuffer(
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = resource_.Get();
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    barrier.Transition.StateAfter = finalState;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     commandList.ResourceBarrier(1, &barrier);
+}
+
+void GpuBuffer::InitializeVertexBuffer(
+    ID3D12Device& device,
+    ID3D12GraphicsCommandList& commandList,
+    const std::span<const std::byte> initialData,
+    const std::uint32_t strideInBytes)
+{
+    Initialize(device, commandList, initialData, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 
     vertexBufferView_.BufferLocation = resource_->GetGPUVirtualAddress();
     vertexBufferView_.SizeInBytes = static_cast<UINT>(initialData.size_bytes());
     vertexBufferView_.StrideInBytes = strideInBytes;
+}
+
+void GpuBuffer::InitializeIndexBuffer(
+    ID3D12Device& device,
+    ID3D12GraphicsCommandList& commandList,
+    const std::span<const std::byte> initialData,
+    const DXGI_FORMAT format)
+{
+    Initialize(device, commandList, initialData, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+
+    indexBufferView_.BufferLocation = resource_->GetGPUVirtualAddress();
+    indexBufferView_.SizeInBytes = static_cast<UINT>(initialData.size_bytes());
+    indexBufferView_.Format = format;
 }
 
 ID3D12Resource* GpuBuffer::GetResource() const noexcept
@@ -96,6 +118,11 @@ ID3D12Resource* GpuBuffer::GetResource() const noexcept
 const D3D12_VERTEX_BUFFER_VIEW& GpuBuffer::GetVertexBufferView() const noexcept
 {
     return vertexBufferView_;
+}
+
+const D3D12_INDEX_BUFFER_VIEW& GpuBuffer::GetIndexBufferView() const noexcept
+{
+    return indexBufferView_;
 }
 
 void GpuBuffer::ReleaseUploadResource() noexcept

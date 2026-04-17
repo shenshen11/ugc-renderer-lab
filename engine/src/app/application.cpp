@@ -29,7 +29,7 @@ int Application::Run()
 
     while (window_->ProcessMessages())
     {
-        if (window_->IsMinimized())
+        if (window_->IsMinimized() || window_->IsInSizeMove())
         {
             Sleep(10);
             continue;

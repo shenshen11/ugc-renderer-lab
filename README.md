@@ -66,6 +66,7 @@ Current milestone:
 - A first `GpuBuffer` abstraction with default-heap upload staging
 - Descriptor heap allocation for RTV and CBV paths
 - A constant buffer driven MVP transform for animated rendering
+- Indexed drawing with a first `Mesh` abstraction
 
 ## Build Requirements
 
@@ -94,7 +95,7 @@ build/vs2022-debug/sandbox/Debug/ugc_renderer_sandbox.exe
 - Add ImGui integration for runtime inspection
 - Add descriptor allocation and a first constant-buffer path
 - Add shader reload and pipeline reload workflow
-- Add indexed geometry and a simple mesh abstraction
+- Add indexed geometry and a simple mesh/material resource split
 
 ## License
 

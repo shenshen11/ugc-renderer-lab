@@ -16,7 +16,7 @@ namespace ugc_renderer
 class ConstantBuffer;
 class DescriptorAllocation;
 class DescriptorAllocator;
-class GpuBuffer;
+class Mesh;
 class Window;
 
 class D3D12Renderer
@@ -71,10 +71,11 @@ private:
     std::unique_ptr<DescriptorAllocator> cbvAllocator_;
     std::unique_ptr<DescriptorAllocation> rtvAllocation_;
     std::unique_ptr<DescriptorAllocation> cbvAllocation_;
-    std::unique_ptr<GpuBuffer> vertexBuffer_;
+    std::unique_ptr<Mesh> mesh_;
     std::unique_ptr<ConstantBuffer> sceneConstantBuffer_;
 
-    std::array<std::uint64_t, kFrameCount> fenceValues_ = {};
+    std::array<std::uint64_t, kFrameCount> frameFenceValues_ = {};
+    std::uint64_t nextFenceValue_ = 1;
     HANDLE fenceEvent_ = nullptr;
     std::uint32_t frameIndex_ = 0;
     D3D12_VIEWPORT viewport_ = {};

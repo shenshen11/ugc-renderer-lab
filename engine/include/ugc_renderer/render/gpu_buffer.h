@@ -24,14 +24,27 @@ public:
         ID3D12GraphicsCommandList& commandList,
         std::span<const std::byte> initialData,
         std::uint32_t strideInBytes);
+    void InitializeIndexBuffer(
+        ID3D12Device& device,
+        ID3D12GraphicsCommandList& commandList,
+        std::span<const std::byte> initialData,
+        DXGI_FORMAT format);
 
     ID3D12Resource* GetResource() const noexcept;
     const D3D12_VERTEX_BUFFER_VIEW& GetVertexBufferView() const noexcept;
+    const D3D12_INDEX_BUFFER_VIEW& GetIndexBufferView() const noexcept;
     void ReleaseUploadResource() noexcept;
 
 private:
+    void Initialize(
+        ID3D12Device& device,
+        ID3D12GraphicsCommandList& commandList,
+        std::span<const std::byte> initialData,
+        D3D12_RESOURCE_STATES finalState);
+
     Microsoft::WRL::ComPtr<ID3D12Resource> resource_;
     Microsoft::WRL::ComPtr<ID3D12Resource> uploadResource_;
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView_ = {};
+    D3D12_INDEX_BUFFER_VIEW indexBufferView_ = {};
 };
 } // namespace ugc_renderer
