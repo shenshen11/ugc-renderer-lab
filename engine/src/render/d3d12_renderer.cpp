@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -63,6 +64,11 @@ D3D12Renderer::~D3D12Renderer()
         CloseHandle(fenceEvent_);
         fenceEvent_ = nullptr;
     }
+}
+
+void D3D12Renderer::Update(const float deltaTimeSeconds)
+{
+    UpdateCamera(deltaTimeSeconds);
 }
 
 void D3D12Renderer::Render()
@@ -541,6 +547,57 @@ void D3D12Renderer::CreateRenderItems()
 
     createRenderItem({0.16f, 0.0f, 0.95f}, {0.75f, 0.85f, 1.0f, 1.0f}, DirectX::XM_PIDIV4, -1.25f);
     renderItems_.back().scale = {1.8f, 1.8f, 1.0f};
+}
+
+void D3D12Renderer::UpdateCamera(const float deltaTimeSeconds)
+{
+    constexpr float orbitSpeed = 1.7f;
+    constexpr float zoomSpeed = 2.2f;
+
+    if (window_.IsKeyDown('A'))
+    {
+        cameraOrbitYaw_ -= orbitSpeed * deltaTimeSeconds;
+    }
+    if (window_.IsKeyDown('D'))
+    {
+        cameraOrbitYaw_ += orbitSpeed * deltaTimeSeconds;
+    }
+    if (window_.IsKeyDown('W'))
+    {
+        cameraOrbitPitch_ += orbitSpeed * deltaTimeSeconds;
+    }
+    if (window_.IsKeyDown('S'))
+    {
+        cameraOrbitPitch_ -= orbitSpeed * deltaTimeSeconds;
+    }
+    if (window_.IsKeyDown('Q'))
+    {
+        cameraDistance_ = std::max(1.2f, cameraDistance_ - zoomSpeed * deltaTimeSeconds);
+    }
+    if (window_.IsKeyDown('E'))
+    {
+        cameraDistance_ = std::min(8.0f, cameraDistance_ + zoomSpeed * deltaTimeSeconds);
+    }
+    if (window_.IsKeyDown('R'))
+    {
+        cameraOrbitYaw_ = 0.0f;
+        cameraOrbitPitch_ = 0.0f;
+        cameraDistance_ = 3.0f;
+    }
+
+    cameraOrbitPitch_ = std::clamp(cameraOrbitPitch_, -1.2f, 1.2f);
+
+    const float cosPitch = std::cos(cameraOrbitPitch_);
+    const float sinPitch = std::sin(cameraOrbitPitch_);
+    const float cosYaw = std::cos(cameraOrbitYaw_);
+    const float sinYaw = std::sin(cameraOrbitYaw_);
+
+    camera_.target = cameraTarget_;
+    camera_.up = {0.0f, 1.0f, 0.0f};
+    camera_.position = {
+        cameraTarget_.x + cosPitch * sinYaw * cameraDistance_,
+        cameraTarget_.y + sinPitch * cameraDistance_,
+        cameraTarget_.z - cosPitch * cosYaw * cameraDistance_};
 }
 
 void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)

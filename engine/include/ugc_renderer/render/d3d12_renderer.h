@@ -33,6 +33,7 @@ public:
     D3D12Renderer(D3D12Renderer&&) = delete;
     D3D12Renderer& operator=(D3D12Renderer&&) = delete;
 
+    void Update(float deltaTimeSeconds);
     void Render();
     void Resize(std::uint32_t width, std::uint32_t height);
     void WaitForIdle();
@@ -50,6 +51,7 @@ private:
     void CreatePipeline();
     void CreateSceneGeometry();
     void CreateRenderItems();
+    void UpdateCamera(float deltaTimeSeconds);
     void UpdateRenderItemConstants(RenderItem& renderItem);
     std::uint64_t Signal();
     void WaitForFenceValue(std::uint64_t fenceValue);
@@ -80,6 +82,10 @@ private:
     std::unique_ptr<Mesh> mesh_;
     std::vector<RenderItem> renderItems_;
     Camera camera_ = {};
+    DirectX::XMFLOAT3 cameraTarget_ = {0.0f, 0.0f, 0.65f};
+    float cameraOrbitYaw_ = 0.0f;
+    float cameraOrbitPitch_ = 0.0f;
+    float cameraDistance_ = 3.0f;
 
     std::array<std::uint64_t, kFrameCount> frameFenceValues_ = {};
     std::uint64_t nextFenceValue_ = 1;

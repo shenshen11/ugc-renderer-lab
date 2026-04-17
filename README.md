@@ -69,6 +69,7 @@ Current milestone:
 - Indexed drawing with a first `Mesh` abstraction
 - Shared mesh rendering with multiple material-driven render items
 - Perspective camera, view-projection transform, and depth-buffered rendering
+- Keyboard orbit camera controls for interactive scene inspection
 
 ## Build Requirements
 
@@ -100,6 +101,14 @@ build/vs2022-debug/sandbox/Debug/ugc_renderer_sandbox.exe
 - Add a mesh/material resource split suitable for glTF import
 - Add camera controls and a reusable scene graph transform path
 - Add texture SRV binding and material texture inputs
+- Add camera-relative movement and editor-style gizmo interaction
+
+## Controls
+
+- `A / D`: orbit camera left / right
+- `W / S`: orbit camera up / down
+- `Q / E`: zoom in / out
+- `R`: reset camera
 
 ## License
 

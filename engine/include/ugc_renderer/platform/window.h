@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -26,6 +27,7 @@ public:
     std::uint32_t GetClientHeight() const noexcept;
     bool IsMinimized() const noexcept;
     bool IsInSizeMove() const noexcept;
+    bool IsKeyDown(std::uint32_t virtualKey) const noexcept;
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
@@ -42,5 +44,6 @@ private:
     bool resized_ = false;
     bool minimized_ = false;
     bool inSizeMove_ = false;
+    std::array<bool, 256> keyStates_ = {};
 };
 } // namespace ugc_renderer

@@ -107,6 +107,16 @@ bool Window::IsInSizeMove() const noexcept
     return inSizeMove_;
 }
 
+bool Window::IsKeyDown(const std::uint32_t virtualKey) const noexcept
+{
+    if (virtualKey >= keyStates_.size())
+    {
+        return false;
+    }
+
+    return keyStates_[virtualKey];
+}
+
 LRESULT CALLBACK Window::WndProc(const HWND hwnd, const UINT message, const WPARAM wparam, const LPARAM lparam)
 {
     Window* window = nullptr;
@@ -161,6 +171,23 @@ LRESULT Window::HandleMessage(const UINT message, const WPARAM wparam, const LPA
         {
             resized_ = true;
         }
+        return 0;
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (wparam < keyStates_.size())
+        {
+            keyStates_[static_cast<std::size_t>(wparam)] = true;
+        }
+        return 0;
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        if (wparam < keyStates_.size())
+        {
+            keyStates_[static_cast<std::size_t>(wparam)] = false;
+        }
+        return 0;
+    case WM_KILLFOCUS:
+        keyStates_.fill(false);
         return 0;
     default:
         return DefWindowProcW(hwnd_, message, wparam, lparam);

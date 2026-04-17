@@ -6,6 +6,9 @@
 
 #include <Windows.h>
 
+#include <algorithm>
+#include <chrono>
+
 namespace ugc_renderer
 {
 Application::Application()
@@ -26,6 +29,7 @@ Application::~Application()
 int Application::Run()
 {
     Logger::Info("Entering main loop.");
+    auto previousFrameTime = std::chrono::steady_clock::now();
 
     while (window_->ProcessMessages())
     {
@@ -35,6 +39,11 @@ int Application::Run()
             continue;
         }
 
+        const auto currentFrameTime = std::chrono::steady_clock::now();
+        const float deltaTimeSeconds =
+            std::min(std::chrono::duration<float>(currentFrameTime - previousFrameTime).count(), 0.1f);
+        previousFrameTime = currentFrameTime;
+
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         if (window_->ConsumeResize(width, height))
@@ -42,6 +51,7 @@ int Application::Run()
             renderer_->Resize(width, height);
         }
 
+        renderer_->Update(deltaTimeSeconds);
         renderer_->Render();
     }
 
