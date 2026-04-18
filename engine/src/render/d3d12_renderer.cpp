@@ -123,6 +123,8 @@ void D3D12Renderer::Render()
     {
         UpdateRenderItemConstants(renderItem);
         const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
+        const std::uint32_t baseColorTextureIndex =
+            textureManager_->ResolveTextureIndex(material.desc.textures.baseColor, DefaultTextureKind::White);
 
         commandList_->SetGraphicsRootDescriptorTable(0, renderItem.objectCbvAllocation.GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
@@ -130,7 +132,7 @@ void D3D12Renderer::Render()
             material.cbvAllocation.GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             2,
-            textureManager_->GetSrvAllocation(material.desc.textures.baseColor).GetGpuHandle());
+            textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
         const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
         const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
         commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -592,8 +594,17 @@ void D3D12Renderer::CreateTextureAssets()
         return index;
     };
 
-    loadTexture(GetAssetPath(L"textures/checkerboard.png"));
-    loadTexture(GetAssetPath(L"textures/gradient_stripes.png"));
+    {
+        auto& commandAllocator = commandAllocators_[frameIndex_];
+        ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
+        ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
+        textureManager_->CreateDefaultTextures(*commandList_.Get());
+        ExecuteImmediateCommands();
+        textureManager_->ReleaseUploadResources();
+    }
+
+    checkerboardTextureIndex_ = loadTexture(GetAssetPath(L"textures/checkerboard.png"));
+    gradientStripesTextureIndex_ = loadTexture(GetAssetPath(L"textures/gradient_stripes.png"));
 }
 
 void D3D12Renderer::CreateMaterials()
@@ -604,20 +615,26 @@ void D3D12Renderer::CreateMaterials()
     MaterialDesc checkerMaterial = {};
     checkerMaterial.constants.baseColorFactor = {1.0f, 0.75f, 0.75f, 1.0f};
     checkerMaterial.constants.roughnessUvScaleAlphaCutoff = {0.95f, 1.0f, 1.0f, 0.5f};
-    checkerMaterial.textures.baseColor = 0;
+    checkerMaterial.textures.baseColor = checkerboardTextureIndex_;
     materialManager_->CreateMaterial(checkerMaterial);
 
     MaterialDesc stripeMaterial = {};
     stripeMaterial.constants.baseColorFactor = {0.75f, 0.85f, 1.0f, 1.0f};
     stripeMaterial.constants.roughnessUvScaleAlphaCutoff = {0.35f, 1.8f, 1.8f, 0.5f};
-    stripeMaterial.textures.baseColor = 1;
+    stripeMaterial.textures.baseColor = gradientStripesTextureIndex_;
     materialManager_->CreateMaterial(stripeMaterial);
+
+    MaterialDesc fallbackMaterial = {};
+    fallbackMaterial.constants.baseColorFactor = {0.65f, 1.0f, 0.8f, 1.0f};
+    fallbackMaterial.constants.roughnessUvScaleAlphaCutoff = {1.0f, 1.0f, 1.0f, 0.5f};
+    fallbackMaterial.textures.baseColor = kInvalidTextureIndex;
+    materialManager_->CreateMaterial(fallbackMaterial);
 }
 
 void D3D12Renderer::CreateRenderItems()
 {
     renderItems_.clear();
-    renderItems_.reserve(2);
+    renderItems_.reserve(3);
 
     auto createRenderItem = [&](const DirectX::XMFLOAT3 translation,
                                 const std::uint32_t materialIndex,
@@ -647,6 +664,9 @@ void D3D12Renderer::CreateRenderItems()
 
     createRenderItem({0.16f, 0.0f, 0.95f}, 1, DirectX::XM_PIDIV4, -1.25f);
     renderItems_.back().scale = {1.8f, 1.8f, 1.0f};
+
+    createRenderItem({0.0f, -0.58f, 0.65f}, 2, DirectX::XM_PIDIV4 * 0.35f, 0.65f);
+    renderItems_.back().scale = {0.8f, 0.8f, 1.0f};
 }
 
 void D3D12Renderer::UpdateCamera(const float deltaTimeSeconds)

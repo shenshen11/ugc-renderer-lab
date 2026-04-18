@@ -87,6 +87,8 @@ private:
     std::unique_ptr<TextureManager> textureManager_;
     std::unique_ptr<MaterialManager> materialManager_;
     std::vector<RenderItem> renderItems_;
+    std::uint32_t checkerboardTextureIndex_ = 0;
+    std::uint32_t gradientStripesTextureIndex_ = 0;
     Camera camera_ = {};
     DirectX::XMFLOAT3 cameraTarget_ = {0.0f, 0.0f, 0.65f};
     float cameraOrbitYaw_ = 0.0f;
