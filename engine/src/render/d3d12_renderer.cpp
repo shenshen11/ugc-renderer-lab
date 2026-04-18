@@ -2,6 +2,8 @@
 #include "ugc_renderer/render/descriptor_allocator.h"
 #include "ugc_renderer/render/d3d12_renderer.h"
 
+#include "ugc_renderer/asset/gltf_loader.h"
+#include "ugc_renderer/asset/gltf_mesh_builder.h"
 #include "ugc_renderer/core/logger.h"
 #include "ugc_renderer/core/throw_if_failed.h"
 #include "ugc_renderer/platform/window.h"
@@ -37,13 +39,6 @@ std::filesystem::path GetAssetPath(const std::wstring_view relativePath)
 
     return std::filesystem::path(modulePath.data()).parent_path() / L"assets" / std::filesystem::path(relativePath);
 }
-
-struct Vertex
-{
-    float position[3];
-    float color[4];
-    float texCoord[2];
-};
 
 struct ObjectConstants
 {
@@ -552,13 +547,8 @@ void D3D12Renderer::CreatePipeline()
 
 void D3D12Renderer::CreateSceneGeometry()
 {
-    constexpr std::array<Vertex, 4> vertices = {{
-        {{-0.28f, 0.28f, 0.0f}, {1.0f, 0.4f, 0.4f, 1.0f}, {0.0f, 0.0f}},
-        {{0.28f, 0.28f, 0.0f}, {0.4f, 1.0f, 0.4f, 1.0f}, {1.0f, 0.0f}},
-        {{0.28f, -0.28f, 0.0f}, {0.4f, 0.6f, 1.0f, 1.0f}, {1.0f, 1.0f}},
-        {{-0.28f, -0.28f, 0.0f}, {1.0f, 0.9f, 0.3f, 1.0f}, {0.0f, 1.0f}},
-    }};
-    constexpr std::array<std::uint16_t, 6> indices = {0, 1, 2, 0, 2, 3};
+    const GltfDocument document = GltfLoader::LoadFromFile(GetAssetPath(L"gltf/sample_triangle/sample_triangle.gltf"));
+    const GltfRuntimeMesh runtimeMesh = GltfMeshBuilder::BuildFirstPrimitive(document);
 
     auto& commandAllocator = commandAllocators_[frameIndex_];
     ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
@@ -568,11 +558,11 @@ void D3D12Renderer::CreateSceneGeometry()
     mesh_->Initialize(
         *device_.Get(),
         *commandList_.Get(),
-        std::as_bytes(std::span(vertices)),
-        sizeof(Vertex),
-        std::as_bytes(std::span(indices)),
+        std::as_bytes(std::span(runtimeMesh.vertices)),
+        sizeof(GltfRuntimeVertex),
+        std::as_bytes(std::span(runtimeMesh.indices)),
         DXGI_FORMAT_R16_UINT,
-        static_cast<std::uint32_t>(indices.size()));
+        static_cast<std::uint32_t>(runtimeMesh.indices.size()));
 
     ExecuteImmediateCommands();
     mesh_->ReleaseUploadResources();

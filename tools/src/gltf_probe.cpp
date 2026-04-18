@@ -1,4 +1,5 @@
 #include "ugc_renderer/asset/gltf_loader.h"
+#include "ugc_renderer/asset/gltf_mesh_builder.h"
 
 #include <Windows.h>
 
@@ -101,6 +102,10 @@ int main(int argc, char** argv)
                 PrintPath("Resolved image path", image.resolvedPath);
             }
         }
+
+        const ugc_renderer::GltfRuntimeMesh runtimeMesh = ugc_renderer::GltfMeshBuilder::BuildFirstPrimitive(document);
+        PrintCount("Runtime vertices", runtimeMesh.vertices.size());
+        PrintCount("Runtime indices", runtimeMesh.indices.size());
 
         return EXIT_SUCCESS;
     }

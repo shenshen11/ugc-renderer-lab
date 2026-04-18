@@ -3,6 +3,7 @@ set(UGC_RENDERER_ENGINE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 set(UGC_RENDERER_ENGINE_SOURCES
     ${UGC_RENDERER_ENGINE_ROOT}/src/app/application.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/asset/gltf_loader.cpp
+    ${UGC_RENDERER_ENGINE_ROOT}/src/asset/gltf_mesh_builder.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/asset/json_parser.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/core/logger.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/platform/window.cpp
