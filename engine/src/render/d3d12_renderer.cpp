@@ -56,6 +56,8 @@ struct SceneConstants
     DirectX::XMFLOAT4 cameraRightAndTanHalfFovX = {1.0f, 0.0f, 0.0f, 1.0f};
     DirectX::XMFLOAT4 cameraUpAndTanHalfFovY = {0.0f, 1.0f, 0.0f, 1.0f};
     DirectX::XMFLOAT4 cameraForward = {0.0f, 0.0f, 1.0f, 0.0f};
+    DirectX::XMFLOAT4X4 lightViewProjection;
+    DirectX::XMFLOAT4 shadowParams = {1.0f / 2048.0f, 1.0f / 2048.0f, 0.0035f, 0.0f};
 };
 
 enum class PipelineStateKind : std::uint32_t
@@ -114,6 +116,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateSceneConstants();
     CreateRenderTargets();
     CreateDepthStencil();
+    CreateShadowMap();
     CreateFence();
     CreatePipeline();
     LoadSceneAsset();
@@ -189,6 +192,63 @@ void D3D12Renderer::Render()
             return leftDistanceSquared > rightDistanceSquared;
         });
 
+    ID3D12DescriptorHeap* descriptorHeaps[] = {cbvAllocator_->GetHeap()};
+    commandList_->SetDescriptorHeaps(static_cast<UINT>(std::size(descriptorHeaps)), descriptorHeaps);
+    commandList_->SetGraphicsRootSignature(rootSignature_.Get());
+    commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    D3D12_RESOURCE_BARRIER shadowMapToDepthWrite = {};
+    shadowMapToDepthWrite.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    shadowMapToDepthWrite.Transition.pResource = shadowMap_.Get();
+    shadowMapToDepthWrite.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    shadowMapToDepthWrite.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    shadowMapToDepthWrite.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    commandList_->ResourceBarrier(1, &shadowMapToDepthWrite);
+
+    D3D12_VIEWPORT shadowViewport = {};
+    shadowViewport.TopLeftX = 0.0f;
+    shadowViewport.TopLeftY = 0.0f;
+    shadowViewport.Width = static_cast<float>(kShadowMapSize);
+    shadowViewport.Height = static_cast<float>(kShadowMapSize);
+    shadowViewport.MinDepth = 0.0f;
+    shadowViewport.MaxDepth = 1.0f;
+    D3D12_RECT shadowScissorRect = {};
+    shadowScissorRect.left = 0;
+    shadowScissorRect.top = 0;
+    shadowScissorRect.right = static_cast<LONG>(kShadowMapSize);
+    shadowScissorRect.bottom = static_cast<LONG>(kShadowMapSize);
+
+    const D3D12_CPU_DESCRIPTOR_HANDLE shadowDsvHandle = shadowDsvAllocation_.GetCpuHandle();
+    commandList_->RSSetViewports(1, &shadowViewport);
+    commandList_->RSSetScissorRects(1, &shadowScissorRect);
+    commandList_->OMSetRenderTargets(0, nullptr, FALSE, &shadowDsvHandle);
+    commandList_->ClearDepthStencilView(shadowDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    commandList_->SetPipelineState(shadowPipelineState_.Get());
+
+    for (const std::uint32_t renderItemIndex : opaqueRenderItemIndices_)
+    {
+        auto& renderItem = renderItems_[renderItemIndex];
+        const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
+        const std::uint32_t baseColorTextureIndex =
+            textureManager_->ResolveTextureIndex(material.desc.textures.baseColor, DefaultTextureKind::White);
+        commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(1, renderItem.objectCbvAllocation.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(2, material.cbvAllocation.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            3,
+            textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
+        const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
+        const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
+        commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
+        commandList_->IASetIndexBuffer(&indexBufferView);
+        commandList_->DrawIndexedInstanced(renderItem.mesh->GetIndexCount(), 1, 0, 0, 0);
+    }
+
+    D3D12_RESOURCE_BARRIER shadowMapToShaderResource = shadowMapToDepthWrite;
+    shadowMapToShaderResource.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    shadowMapToShaderResource.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    commandList_->ResourceBarrier(1, &shadowMapToShaderResource);
+
     D3D12_RESOURCE_BARRIER toRenderTarget = {};
     toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     toRenderTarget.Transition.pResource = renderTargets_[frameIndex_].Get();
@@ -208,7 +268,6 @@ void D3D12Renderer::Render()
     constexpr std::array<float, 4> clearColor = {0.07f, 0.12f, 0.18f, 1.0f};
     commandList_->ClearRenderTargetView(rtvHandle, clearColor.data(), 0, nullptr);
     commandList_->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    ID3D12DescriptorHeap* descriptorHeaps[] = {cbvAllocator_->GetHeap()};
     commandList_->SetDescriptorHeaps(static_cast<UINT>(std::size(descriptorHeaps)), descriptorHeaps);
     commandList_->SetGraphicsRootSignature(rootSignature_.Get());
     commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -269,6 +328,7 @@ void D3D12Renderer::Render()
             textureManager_
                 ->GetSrvAllocation(textureManager_->ResolveTextureIndex(environmentTextureIndex_, DefaultTextureKind::Black))
                 .GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(9, shadowSrvAllocation_.GetGpuHandle());
         const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
         const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
         commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -468,11 +528,11 @@ void D3D12Renderer::CreateDescriptorHeap()
     rtvAllocation_ = std::make_unique<DescriptorAllocation>(rtvAllocator_->Allocate(kFrameCount));
 
     dsvAllocator_ = std::make_unique<DescriptorAllocator>();
-    dsvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, false);
+    dsvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 2, false);
     dsvAllocation_ = std::make_unique<DescriptorAllocation>(dsvAllocator_->Allocate(1));
 
     cbvAllocator_ = std::make_unique<DescriptorAllocator>();
-    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 64, true);
+    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 128, true);
 }
 
 void D3D12Renderer::CreateSceneConstants()
@@ -546,6 +606,63 @@ void D3D12Renderer::CreateDepthStencil()
     device_->CreateDepthStencilView(depthStencil_.Get(), &depthStencilViewDesc, dsvAllocation_->GetCpuHandle());
 }
 
+void D3D12Renderer::CreateShadowMap()
+{
+    D3D12_HEAP_PROPERTIES heapProperties = {};
+    heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heapProperties.CreationNodeMask = 1;
+    heapProperties.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resourceDesc.Alignment = 0;
+    resourceDesc.Width = kShadowMapSize;
+    resourceDesc.Height = kShadowMapSize;
+    resourceDesc.DepthOrArraySize = 1;
+    resourceDesc.MipLevels = 1;
+    resourceDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.SampleDesc.Quality = 0;
+    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+    clearValue.DepthStencil.Depth = 1.0f;
+    clearValue.DepthStencil.Stencil = 0;
+
+    ThrowIfFailed(
+        device_->CreateCommittedResource(
+            &heapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &resourceDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clearValue,
+            IID_PPV_ARGS(&shadowMap_)),
+        "ID3D12Device::CreateCommittedResource(shadow map)");
+
+    shadowDsvAllocation_ = dsvAllocator_->Allocate(1);
+    shadowSrvAllocation_ = cbvAllocator_->Allocate(1);
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilViewDesc = {};
+    depthStencilViewDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    depthStencilViewDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    depthStencilViewDesc.Flags = D3D12_DSV_FLAG_NONE;
+    device_->CreateDepthStencilView(shadowMap_.Get(), &depthStencilViewDesc, shadowDsvAllocation_.GetCpuHandle());
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC shaderResourceViewDesc = {};
+    shaderResourceViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    shaderResourceViewDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    shaderResourceViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    shaderResourceViewDesc.Texture2D.MostDetailedMip = 0;
+    shaderResourceViewDesc.Texture2D.MipLevels = 1;
+    shaderResourceViewDesc.Texture2D.PlaneSlice = 0;
+    shaderResourceViewDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    device_->CreateShaderResourceView(shadowMap_.Get(), &shaderResourceViewDesc, shadowSrvAllocation_.GetCpuHandle());
+}
+
 void D3D12Renderer::CreateFence()
 {
     ThrowIfFailed(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "ID3D12Device::CreateFence");
@@ -567,6 +684,9 @@ void D3D12Renderer::CreatePipeline()
     const auto skyboxShaderPath = ShaderCompiler::ResolveShaderPath(L"skybox.hlsl");
     const auto skyboxVertexShader = ShaderCompiler::CompileFromFile(skyboxShaderPath, "VSMain", "vs_5_0");
     const auto skyboxPixelShader = ShaderCompiler::CompileFromFile(skyboxShaderPath, "PSMain", "ps_5_0");
+    const auto shadowShaderPath = ShaderCompiler::ResolveShaderPath(L"shadow_depth.hlsl");
+    const auto shadowVertexShader = ShaderCompiler::CompileFromFile(shadowShaderPath, "VSMain", "vs_5_0");
+    const auto shadowPixelShader = ShaderCompiler::CompileFromFile(shadowShaderPath, "PSMain", "ps_5_0");
 
     D3D12_DESCRIPTOR_RANGE objectCbvDescriptorRange = {};
     objectCbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
@@ -589,14 +709,14 @@ void D3D12Renderer::CreatePipeline()
     srvDescriptorRange.RegisterSpace = 0;
     srvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    std::array<D3D12_DESCRIPTOR_RANGE, 6> textureRanges = {};
+    std::array<D3D12_DESCRIPTOR_RANGE, 7> textureRanges = {};
     for (std::uint32_t textureSlot = 0; textureSlot < textureRanges.size(); ++textureSlot)
     {
         textureRanges[textureSlot] = srvDescriptorRange;
         textureRanges[textureSlot].BaseShaderRegister = textureSlot;
     }
 
-    std::array<D3D12_ROOT_PARAMETER, 9> rootParameters = {};
+    std::array<D3D12_ROOT_PARAMETER, 10> rootParameters = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
     D3D12_DESCRIPTOR_RANGE sceneCbvDescriptorRange = {};
@@ -623,26 +743,40 @@ void D3D12Renderer::CreatePipeline()
         rootParameters[textureSlot + 3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     }
 
-    D3D12_STATIC_SAMPLER_DESC staticSampler = {};
-    staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    staticSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    staticSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    staticSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    staticSampler.MipLODBias = 0.0f;
-    staticSampler.MaxAnisotropy = 1;
-    staticSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    staticSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    staticSampler.MinLOD = 0.0f;
-    staticSampler.MaxLOD = D3D12_FLOAT32_MAX;
-    staticSampler.ShaderRegister = 0;
-    staticSampler.RegisterSpace = 0;
-    staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    std::array<D3D12_STATIC_SAMPLER_DESC, 2> staticSamplers = {};
+    staticSamplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    staticSamplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[0].MipLODBias = 0.0f;
+    staticSamplers[0].MaxAnisotropy = 1;
+    staticSamplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    staticSamplers[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    staticSamplers[0].MinLOD = 0.0f;
+    staticSamplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    staticSamplers[0].ShaderRegister = 0;
+    staticSamplers[0].RegisterSpace = 0;
+    staticSamplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    staticSamplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    staticSamplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[1].MipLODBias = 0.0f;
+    staticSamplers[1].MaxAnisotropy = 1;
+    staticSamplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    staticSamplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    staticSamplers[1].MinLOD = 0.0f;
+    staticSamplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    staticSamplers[1].ShaderRegister = 1;
+    staticSamplers[1].RegisterSpace = 0;
+    staticSamplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
     rootSignatureDesc.NumParameters = static_cast<UINT>(rootParameters.size());
     rootSignatureDesc.pParameters = rootParameters.data();
-    rootSignatureDesc.NumStaticSamplers = 1;
-    rootSignatureDesc.pStaticSamplers = &staticSampler;
+    rootSignatureDesc.NumStaticSamplers = static_cast<UINT>(staticSamplers.size());
+    rootSignatureDesc.pStaticSamplers = staticSamplers.data();
     rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> serializedRootSignature;
@@ -796,6 +930,32 @@ void D3D12Renderer::CreatePipeline()
     ThrowIfFailed(
         device_->CreateGraphicsPipelineState(&skyboxPipelineStateDesc, IID_PPV_ARGS(&skyboxPipelineState_)),
         "ID3D12Device::CreateGraphicsPipelineState(skybox)");
+
+    D3D12_RASTERIZER_DESC shadowRasterizerState = createRasterizerState(true);
+    shadowRasterizerState.DepthBias = 1000;
+    shadowRasterizerState.SlopeScaledDepthBias = 1.5f;
+    shadowRasterizerState.DepthBiasClamp = 0.01f;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowPipelineStateDesc = {};
+    shadowPipelineStateDesc.pRootSignature = rootSignature_.Get();
+    shadowPipelineStateDesc.VS = {shadowVertexShader->GetBufferPointer(), shadowVertexShader->GetBufferSize()};
+    shadowPipelineStateDesc.PS = {shadowPixelShader->GetBufferPointer(), shadowPixelShader->GetBufferSize()};
+    shadowPipelineStateDesc.BlendState = createBlendState(false);
+    shadowPipelineStateDesc.SampleMask = UINT_MAX;
+    shadowPipelineStateDesc.RasterizerState = shadowRasterizerState;
+    shadowPipelineStateDesc.DepthStencilState.DepthEnable = TRUE;
+    shadowPipelineStateDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    shadowPipelineStateDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    shadowPipelineStateDesc.DepthStencilState.StencilEnable = FALSE;
+    shadowPipelineStateDesc.InputLayout = {inputElements, static_cast<UINT>(std::size(inputElements))};
+    shadowPipelineStateDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    shadowPipelineStateDesc.NumRenderTargets = 0;
+    shadowPipelineStateDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    shadowPipelineStateDesc.SampleDesc.Count = 1;
+
+    ThrowIfFailed(
+        device_->CreateGraphicsPipelineState(&shadowPipelineStateDesc, IID_PPV_ARGS(&shadowPipelineState_)),
+        "ID3D12Device::CreateGraphicsPipelineState(shadow)");
 }
 
 void D3D12Renderer::LoadSceneAsset()
@@ -1091,6 +1251,13 @@ void D3D12Renderer::UpdateSceneConstants()
         DirectX::XMVector3Normalize(DirectX::XMVector3Cross(cameraUp, cameraForwardVector));
     const DirectX::XMVECTOR orthonormalUpVector =
         DirectX::XMVector3Normalize(DirectX::XMVector3Cross(cameraForwardVector, cameraRightVector));
+    const DirectX::XMVECTOR lightDirection = DirectX::XMVector3Normalize(DirectX::XMVectorSet(0.35f, 0.8f, -0.45f, 0.0f));
+    const DirectX::XMVECTOR sceneCenter = DirectX::XMVectorSet(cameraTarget_.x, cameraTarget_.y, cameraTarget_.z, 1.0f);
+    const DirectX::XMVECTOR lightPosition = DirectX::XMVectorAdd(sceneCenter, DirectX::XMVectorScale(lightDirection, 5.5f));
+    const DirectX::XMVECTOR lightUp = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    const DirectX::XMMATRIX lightView = DirectX::XMMatrixLookAtLH(lightPosition, sceneCenter, lightUp);
+    const DirectX::XMMATRIX lightProjection = DirectX::XMMatrixOrthographicLH(6.0f, 6.0f, 0.1f, 12.0f);
+    const DirectX::XMMATRIX lightViewProjection = lightView * lightProjection;
 
     SceneConstants constants = {};
     constants.cameraPositionAndEnvironmentIntensity = {
@@ -1106,6 +1273,12 @@ void D3D12Renderer::UpdateSceneConstants()
     constants.cameraUpAndTanHalfFovY.w = tanHalfFovY;
     DirectX::XMStoreFloat4(&constants.cameraForward, cameraForwardVector);
     constants.cameraForward.w = 0.0f;
+    DirectX::XMStoreFloat4x4(&constants.lightViewProjection, DirectX::XMMatrixTranspose(lightViewProjection));
+    constants.shadowParams = {
+        1.0f / static_cast<float>(kShadowMapSize),
+        1.0f / static_cast<float>(kShadowMapSize),
+        0.0035f,
+        0.0f};
     sceneConstantBuffer_->Update(std::as_bytes(std::span {&constants, 1}));
 }
 

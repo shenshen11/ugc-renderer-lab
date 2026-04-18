@@ -58,6 +58,7 @@ private:
     void CreateDescriptorHeap();
     void CreateRenderTargets();
     void CreateDepthStencil();
+    void CreateShadowMap();
     void CreateFence();
     void CreatePipeline();
     void LoadSceneAsset();
@@ -81,6 +82,7 @@ private:
 
     static constexpr std::uint32_t kFrameCount = 2;
     static constexpr std::uint32_t kPipelineStateCount = 4;
+    static constexpr std::uint32_t kShadowMapSize = 2048;
 
     Window& window_;
 
@@ -92,15 +94,19 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>, kFrameCount> commandAllocators_;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kFrameCount> renderTargets_;
     Microsoft::WRL::ComPtr<ID3D12Resource> depthStencil_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> shadowMap_;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kPipelineStateCount> pipelineStates_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> skyboxPipelineState_;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> shadowPipelineState_;
     std::unique_ptr<DescriptorAllocator> rtvAllocator_;
     std::unique_ptr<DescriptorAllocator> dsvAllocator_;
     std::unique_ptr<DescriptorAllocator> cbvAllocator_;
     std::unique_ptr<DescriptorAllocation> rtvAllocation_;
     std::unique_ptr<DescriptorAllocation> dsvAllocation_;
+    DescriptorAllocation shadowDsvAllocation_ = {};
+    DescriptorAllocation shadowSrvAllocation_ = {};
     std::unique_ptr<ConstantBuffer> sceneConstantBuffer_;
     DescriptorAllocation sceneCbvAllocation_ = {};
     std::unique_ptr<TextureManager> textureManager_;

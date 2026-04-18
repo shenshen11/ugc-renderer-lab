@@ -6,6 +6,8 @@ cbuffer SceneConstants : register(b0)
     float4 cameraRightAndTanHalfFovX;
     float4 cameraUpAndTanHalfFovY;
     float4 cameraForward;
+    float4x4 lightViewProjection;
+    float4 shadowParams;
 }
 
 Texture2D environmentTexture : register(t5);

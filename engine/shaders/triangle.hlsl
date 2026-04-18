@@ -6,6 +6,8 @@ cbuffer SceneConstants : register(b0)
     float4 cameraRightAndTanHalfFovX;
     float4 cameraUpAndTanHalfFovY;
     float4 cameraForward;
+    float4x4 lightViewProjection;
+    float4 shadowParams;
 }
 
 cbuffer ObjectConstants : register(b1)
@@ -29,7 +31,9 @@ Texture2D metallicRoughnessTexture : register(t2);
 Texture2D occlusionTexture : register(t3);
 Texture2D emissiveTexture : register(t4);
 Texture2D environmentTexture : register(t5);
+Texture2D shadowMap : register(t6);
 SamplerState materialSampler : register(s0);
+SamplerState shadowSampler : register(s1);
 
 static const float PI = 3.14159265359f;
 static const float INV_PI = 0.31830988618f;
@@ -181,6 +185,42 @@ float3 SampleSpecularEnvironment(float3 reflectionDirection, float3 surfaceNorma
     return accumulated;
 }
 
+float ComputeShadowVisibility(float3 worldPosition, float3 normal, float3 lightDirection)
+{
+    float4 lightClipPosition = mul(lightViewProjection, float4(worldPosition, 1.0f));
+    float3 lightNdc = lightClipPosition.xyz / max(lightClipPosition.w, 1e-4f);
+    float2 shadowUv = float2(lightNdc.x * 0.5f + 0.5f, lightNdc.y * -0.5f + 0.5f);
+
+    if (shadowUv.x <= 0.0f || shadowUv.x >= 1.0f || shadowUv.y <= 0.0f || shadowUv.y >= 1.0f)
+    {
+        return 1.0f;
+    }
+
+    if (lightNdc.z <= 0.0f || lightNdc.z >= 1.0f)
+    {
+        return 1.0f;
+    }
+
+    float bias = max(0.0006f, shadowParams.z * (1.0f - saturate(dot(normal, lightDirection))));
+    float compareDepth = lightNdc.z - bias;
+    float2 texelSize = shadowParams.xy;
+    float visibility = 0.0f;
+
+    [unroll]
+    for (int offsetY = -1; offsetY <= 1; ++offsetY)
+    {
+        [unroll]
+        for (int offsetX = -1; offsetX <= 1; ++offsetX)
+        {
+            float2 sampleUv = shadowUv + float2(offsetX, offsetY) * texelSize;
+            float sampledDepth = shadowMap.SampleLevel(shadowSampler, sampleUv, 0).r;
+            visibility += compareDepth <= sampledDepth ? 1.0f : 0.0f;
+        }
+    }
+
+    return visibility / 9.0f;
+}
+
 float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 {
     float2 uv = input.texCoord * roughnessUvScaleAlphaCutoff.yz;
@@ -243,7 +283,8 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 ks = fresnel;
     float3 kd = (1.0f - ks) * (1.0f - metallic);
     float3 radiance = lightColor * lightIntensity;
-    float3 directLighting = (kd * albedo / PI + specular) * radiance * ndotl;
+    float shadowVisibility = ComputeShadowVisibility(input.worldPosition, normal, lightDirection);
+    float3 directLighting = (kd * albedo / PI + specular) * radiance * ndotl * shadowVisibility;
 
     float3 diffuseEnvironment = SampleEnvironment(normal);
     float3 reflectionDirection = reflect(-viewDirection, normal);
