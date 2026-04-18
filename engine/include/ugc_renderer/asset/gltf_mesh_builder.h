@@ -11,6 +11,7 @@ struct GltfRuntimeVertex
 {
     float position[3] = {};
     float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float normal[3] = {0.0f, 0.0f, 1.0f};
     float texCoord[2] = {};
 };
 
@@ -24,6 +25,10 @@ struct GltfRuntimeMesh
 class GltfMeshBuilder
 {
 public:
+    static GltfRuntimeMesh BuildPrimitive(
+        const GltfDocument& document,
+        std::uint32_t meshIndex,
+        std::uint32_t primitiveIndex);
     static GltfRuntimeMesh BuildFirstPrimitive(const GltfDocument& document);
 };
 } // namespace ugc_renderer

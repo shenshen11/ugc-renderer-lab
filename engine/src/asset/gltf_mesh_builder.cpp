@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -286,6 +287,100 @@ void DecodeColors(
     }
 }
 
+void GenerateFlatNormals(GltfRuntimeMesh& mesh)
+{
+    for (auto& vertex : mesh.vertices)
+    {
+        vertex.normal[0] = 0.0f;
+        vertex.normal[1] = 0.0f;
+        vertex.normal[2] = 0.0f;
+    }
+
+    for (std::size_t indexOffset = 0; indexOffset + 2 < mesh.indices.size(); indexOffset += 3)
+    {
+        const std::uint32_t index0 = mesh.indices[indexOffset + 0];
+        const std::uint32_t index1 = mesh.indices[indexOffset + 1];
+        const std::uint32_t index2 = mesh.indices[indexOffset + 2];
+
+        if (index0 >= mesh.vertices.size() || index1 >= mesh.vertices.size() || index2 >= mesh.vertices.size())
+        {
+            throw std::runtime_error("glTF mesh index points outside decoded vertex range.");
+        }
+
+        const auto& position0 = mesh.vertices[index0].position;
+        const auto& position1 = mesh.vertices[index1].position;
+        const auto& position2 = mesh.vertices[index2].position;
+
+        const std::array<float, 3> edge0 = {
+            position1[0] - position0[0],
+            position1[1] - position0[1],
+            position1[2] - position0[2]};
+        const std::array<float, 3> edge1 = {
+            position2[0] - position0[0],
+            position2[1] - position0[1],
+            position2[2] - position0[2]};
+        const std::array<float, 3> faceNormal = {
+            edge0[1] * edge1[2] - edge0[2] * edge1[1],
+            edge0[2] * edge1[0] - edge0[0] * edge1[2],
+            edge0[0] * edge1[1] - edge0[1] * edge1[0]};
+
+        for (const std::uint32_t vertexIndex : {index0, index1, index2})
+        {
+            mesh.vertices[vertexIndex].normal[0] += faceNormal[0];
+            mesh.vertices[vertexIndex].normal[1] += faceNormal[1];
+            mesh.vertices[vertexIndex].normal[2] += faceNormal[2];
+        }
+    }
+
+    for (auto& vertex : mesh.vertices)
+    {
+        const float lengthSquared =
+            vertex.normal[0] * vertex.normal[0] +
+            vertex.normal[1] * vertex.normal[1] +
+            vertex.normal[2] * vertex.normal[2];
+        if (lengthSquared <= std::numeric_limits<float>::epsilon())
+        {
+            vertex.normal[0] = 0.0f;
+            vertex.normal[1] = 0.0f;
+            vertex.normal[2] = 1.0f;
+            continue;
+        }
+
+        const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+        vertex.normal[0] *= inverseLength;
+        vertex.normal[1] *= inverseLength;
+        vertex.normal[2] *= inverseLength;
+    }
+}
+
+void DecodeNormals(
+    const GltfDocument& document,
+    const std::vector<std::vector<std::byte>>& buffers,
+    const GltfPrimitive& primitive,
+    GltfRuntimeMesh& mesh)
+{
+    const std::uint32_t normalAccessorIndex = FindOptionalAttribute(primitive, "NORMAL");
+    if (normalAccessorIndex == kInvalidGltfIndex)
+    {
+        GenerateFlatNormals(mesh);
+        return;
+    }
+
+    const GltfAccessor& accessor = GetAccessor(document, normalAccessorIndex);
+    if (accessor.componentType != kComponentTypeFloat || accessor.type != "VEC3" || accessor.count != mesh.vertices.size())
+    {
+        throw std::runtime_error("glTF NORMAL accessor must be VEC3 float and match POSITION count.");
+    }
+
+    for (std::uint32_t vertexIndex = 0; vertexIndex < accessor.count; ++vertexIndex)
+    {
+        const std::byte* element = GetElementPointer(document, buffers, accessor, vertexIndex);
+        mesh.vertices[vertexIndex].normal[0] = ReadFloat(element + 0 * sizeof(float));
+        mesh.vertices[vertexIndex].normal[1] = ReadFloat(element + 1 * sizeof(float));
+        mesh.vertices[vertexIndex].normal[2] = ReadFloat(element + 2 * sizeof(float));
+    }
+}
+
 void DecodeIndices(
     const GltfDocument& document,
     const std::vector<std::vector<std::byte>>& buffers,
@@ -327,16 +422,25 @@ void DecodeIndices(
 }
 } // namespace
 
-GltfRuntimeMesh GltfMeshBuilder::BuildFirstPrimitive(const GltfDocument& document)
+GltfRuntimeMesh GltfMeshBuilder::BuildPrimitive(
+    const GltfDocument& document,
+    const std::uint32_t meshIndex,
+    const std::uint32_t primitiveIndex)
 {
-    static_assert(sizeof(GltfRuntimeVertex) == 36);
+    static_assert(sizeof(GltfRuntimeVertex) == 48);
 
-    if (document.meshes.empty() || document.meshes.front().primitives.empty())
+    if (meshIndex >= document.meshes.size())
     {
-        throw std::runtime_error("glTF document does not contain a mesh primitive.");
+        throw std::runtime_error("glTF mesh index is invalid.");
     }
 
-    const GltfPrimitive& primitive = document.meshes.front().primitives.front();
+    const GltfMesh& meshDefinition = document.meshes[meshIndex];
+    if (primitiveIndex >= meshDefinition.primitives.size())
+    {
+        throw std::runtime_error("glTF primitive index is invalid.");
+    }
+
+    const GltfPrimitive& primitive = meshDefinition.primitives[primitiveIndex];
     if (primitive.mode != 4)
     {
         throw std::runtime_error("Only glTF triangle-list primitives are supported for runtime mesh upload.");
@@ -350,6 +454,17 @@ GltfRuntimeMesh GltfMeshBuilder::BuildFirstPrimitive(const GltfDocument& documen
     DecodeTexCoords(document, buffers, primitive, mesh);
     DecodeColors(document, buffers, primitive, mesh);
     DecodeIndices(document, buffers, primitive, mesh);
+    DecodeNormals(document, buffers, primitive, mesh);
     return mesh;
+}
+
+GltfRuntimeMesh GltfMeshBuilder::BuildFirstPrimitive(const GltfDocument& document)
+{
+    if (document.meshes.empty() || document.meshes.front().primitives.empty())
+    {
+        throw std::runtime_error("glTF document does not contain a mesh primitive.");
+    }
+
+    return BuildPrimitive(document, 0, 0);
 }
 } // namespace ugc_renderer

@@ -19,6 +19,7 @@ namespace ugc_renderer
 {
 class DescriptorAllocation;
 class DescriptorAllocator;
+struct GltfDocument;
 class MaterialManager;
 class Mesh;
 class TextureManager;
@@ -41,6 +42,12 @@ public:
     void WaitForIdle();
 
 private:
+    struct ScenePrimitiveAsset
+    {
+        std::unique_ptr<Mesh> mesh;
+        std::uint32_t material = 0;
+    };
+
     void EnableDebugLayerIfAvailable();
     void CreateFactory();
     void CreateDevice();
@@ -51,6 +58,7 @@ private:
     void CreateDepthStencil();
     void CreateFence();
     void CreatePipeline();
+    void LoadSceneAsset();
     void CreateSceneGeometry();
     void CreateTextureAssets();
     void CreateMaterials();
@@ -83,12 +91,14 @@ private:
     std::unique_ptr<DescriptorAllocator> cbvAllocator_;
     std::unique_ptr<DescriptorAllocation> rtvAllocation_;
     std::unique_ptr<DescriptorAllocation> dsvAllocation_;
-    std::unique_ptr<Mesh> mesh_;
     std::unique_ptr<TextureManager> textureManager_;
     std::unique_ptr<MaterialManager> materialManager_;
+    std::unique_ptr<GltfDocument> sceneDocument_;
+    std::vector<ScenePrimitiveAsset> scenePrimitiveAssets_;
+    std::vector<std::vector<std::uint32_t>> sceneMeshPrimitiveAssetIndices_;
     std::vector<RenderItem> renderItems_;
-    std::uint32_t checkerboardTextureIndex_ = 0;
-    std::uint32_t gradientStripesTextureIndex_ = 0;
+    std::vector<std::uint32_t> runtimeTextureIndices_;
+    std::vector<std::uint32_t> runtimeMaterialIndices_;
     Camera camera_ = {};
     DirectX::XMFLOAT3 cameraTarget_ = {0.0f, 0.0f, 0.65f};
     float cameraOrbitYaw_ = 0.0f;

@@ -4,6 +4,7 @@
 
 #include "ugc_renderer/asset/gltf_loader.h"
 #include "ugc_renderer/asset/gltf_mesh_builder.h"
+#include "ugc_renderer/asset/gltf_scene_builder.h"
 #include "ugc_renderer/core/logger.h"
 #include "ugc_renderer/core/throw_if_failed.h"
 #include "ugc_renderer/platform/window.h"
@@ -42,7 +43,11 @@ std::filesystem::path GetAssetPath(const std::wstring_view relativePath)
 
 struct ObjectConstants
 {
-    DirectX::XMFLOAT4X4 mvp;
+    DirectX::XMFLOAT4X4 world;
+    DirectX::XMFLOAT4X4 worldViewProjection;
+    DirectX::XMFLOAT4X4 worldInverseTranspose;
+    DirectX::XMFLOAT3 cameraPosition = {};
+    float padding = 0.0f;
 };
 } // namespace
 
@@ -59,6 +64,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateDepthStencil();
     CreateFence();
     CreatePipeline();
+    LoadSceneAsset();
     CreateSceneGeometry();
     CreateTextureAssets();
     CreateMaterials();
@@ -424,7 +430,7 @@ void D3D12Renderer::CreatePipeline()
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
     rootParameters[0].DescriptorTable.pDescriptorRanges = &objectCbvDescriptorRange;
-    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
     rootParameters[1].DescriptorTable.pDescriptorRanges = &materialCbvDescriptorRange;
@@ -487,7 +493,8 @@ void D3D12Renderer::CreatePipeline()
     constexpr D3D12_INPUT_ELEMENT_DESC inputElements[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     D3D12_BLEND_DESC blendState = {};
@@ -545,27 +552,54 @@ void D3D12Renderer::CreatePipeline()
         "ID3D12Device::CreateGraphicsPipelineState");
 }
 
+void D3D12Renderer::LoadSceneAsset()
+{
+    sceneDocument_ = std::make_unique<GltfDocument>(
+        GltfLoader::LoadFromFile(GetAssetPath(L"gltf/sample_scene/sample_scene.gltf")));
+}
+
 void D3D12Renderer::CreateSceneGeometry()
 {
-    const GltfDocument document = GltfLoader::LoadFromFile(GetAssetPath(L"gltf/sample_triangle/sample_triangle.gltf"));
-    const GltfRuntimeMesh runtimeMesh = GltfMeshBuilder::BuildFirstPrimitive(document);
-
     auto& commandAllocator = commandAllocators_[frameIndex_];
     ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
     ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
 
-    mesh_ = std::make_unique<Mesh>();
-    mesh_->Initialize(
-        *device_.Get(),
-        *commandList_.Get(),
-        std::as_bytes(std::span(runtimeMesh.vertices)),
-        sizeof(GltfRuntimeVertex),
-        std::as_bytes(std::span(runtimeMesh.indices)),
-        DXGI_FORMAT_R16_UINT,
-        static_cast<std::uint32_t>(runtimeMesh.indices.size()));
+    scenePrimitiveAssets_.clear();
+    sceneMeshPrimitiveAssetIndices_.clear();
+    sceneMeshPrimitiveAssetIndices_.resize(sceneDocument_->meshes.size());
+
+    for (std::uint32_t meshIndex = 0; meshIndex < sceneDocument_->meshes.size(); ++meshIndex)
+    {
+        const auto& meshDefinition = sceneDocument_->meshes[meshIndex];
+        sceneMeshPrimitiveAssetIndices_[meshIndex].reserve(meshDefinition.primitives.size());
+
+        for (std::uint32_t primitiveIndex = 0; primitiveIndex < meshDefinition.primitives.size(); ++primitiveIndex)
+        {
+            const GltfRuntimeMesh runtimeMesh = GltfMeshBuilder::BuildPrimitive(*sceneDocument_, meshIndex, primitiveIndex);
+
+            ScenePrimitiveAsset primitiveAsset = {};
+            primitiveAsset.material = runtimeMesh.material;
+            primitiveAsset.mesh = std::make_unique<Mesh>();
+            primitiveAsset.mesh->Initialize(
+                *device_.Get(),
+                *commandList_.Get(),
+                std::as_bytes(std::span(runtimeMesh.vertices)),
+                sizeof(GltfRuntimeVertex),
+                std::as_bytes(std::span(runtimeMesh.indices)),
+                DXGI_FORMAT_R16_UINT,
+                static_cast<std::uint32_t>(runtimeMesh.indices.size()));
+
+            const std::uint32_t primitiveAssetIndex = static_cast<std::uint32_t>(scenePrimitiveAssets_.size());
+            sceneMeshPrimitiveAssetIndices_[meshIndex].push_back(primitiveAssetIndex);
+            scenePrimitiveAssets_.push_back(std::move(primitiveAsset));
+        }
+    }
 
     ExecuteImmediateCommands();
-    mesh_->ReleaseUploadResources();
+    for (auto& primitiveAsset : scenePrimitiveAssets_)
+    {
+        primitiveAsset.mesh->ReleaseUploadResources();
+    }
 }
 
 void D3D12Renderer::CreateTextureAssets()
@@ -593,8 +627,23 @@ void D3D12Renderer::CreateTextureAssets()
         textureManager_->ReleaseUploadResources();
     }
 
-    checkerboardTextureIndex_ = loadTexture(GetAssetPath(L"textures/checkerboard.png"));
-    gradientStripesTextureIndex_ = loadTexture(GetAssetPath(L"textures/gradient_stripes.png"));
+    runtimeTextureIndices_.assign(sceneDocument_->textures.size(), kInvalidTextureIndex);
+    for (std::uint32_t textureIndex = 0; textureIndex < sceneDocument_->textures.size(); ++textureIndex)
+    {
+        const GltfTexture& texture = sceneDocument_->textures[textureIndex];
+        if (texture.source == kInvalidGltfIndex || texture.source >= sceneDocument_->images.size())
+        {
+            continue;
+        }
+
+        const GltfImage& image = sceneDocument_->images[texture.source];
+        if (image.isDataUri || image.bufferView != kInvalidGltfIndex || image.resolvedPath.empty())
+        {
+            continue;
+        }
+
+        runtimeTextureIndices_[textureIndex] = loadTexture(image.resolvedPath);
+    }
 }
 
 void D3D12Renderer::CreateMaterials()
@@ -602,41 +651,77 @@ void D3D12Renderer::CreateMaterials()
     materialManager_ = std::make_unique<MaterialManager>();
     materialManager_->Initialize(*device_.Get(), *cbvAllocator_);
 
-    MaterialDesc checkerMaterial = {};
-    checkerMaterial.constants.baseColorFactor = {1.0f, 0.75f, 0.75f, 1.0f};
-    checkerMaterial.constants.roughnessUvScaleAlphaCutoff = {0.95f, 1.0f, 1.0f, 0.5f};
-    checkerMaterial.textures.baseColor = checkerboardTextureIndex_;
-    materialManager_->CreateMaterial(checkerMaterial);
+    auto resolveTextureReference = [&](const GltfTextureReference& textureReference)
+    {
+        if (textureReference.texture == kInvalidGltfIndex || textureReference.texture >= runtimeTextureIndices_.size())
+        {
+            return kInvalidTextureIndex;
+        }
 
-    MaterialDesc stripeMaterial = {};
-    stripeMaterial.constants.baseColorFactor = {0.75f, 0.85f, 1.0f, 1.0f};
-    stripeMaterial.constants.roughnessUvScaleAlphaCutoff = {0.35f, 1.8f, 1.8f, 0.5f};
-    stripeMaterial.textures.baseColor = gradientStripesTextureIndex_;
-    materialManager_->CreateMaterial(stripeMaterial);
+        return runtimeTextureIndices_[textureReference.texture];
+    };
 
-    MaterialDesc fallbackMaterial = {};
-    fallbackMaterial.constants.baseColorFactor = {0.65f, 1.0f, 0.8f, 1.0f};
-    fallbackMaterial.constants.roughnessUvScaleAlphaCutoff = {1.0f, 1.0f, 1.0f, 0.5f};
-    fallbackMaterial.textures.baseColor = kInvalidTextureIndex;
-    materialManager_->CreateMaterial(fallbackMaterial);
+    runtimeMaterialIndices_.clear();
+    runtimeMaterialIndices_.reserve(std::max<std::size_t>(sceneDocument_->materials.size(), 1));
+
+    for (const GltfMaterial& gltfMaterial : sceneDocument_->materials)
+    {
+        MaterialDesc material = {};
+        material.constants.baseColorFactor = {
+            gltfMaterial.baseColorFactor[0],
+            gltfMaterial.baseColorFactor[1],
+            gltfMaterial.baseColorFactor[2],
+            gltfMaterial.baseColorFactor[3]};
+        material.constants.emissiveFactorAndMetallic = {
+            gltfMaterial.emissiveFactor[0],
+            gltfMaterial.emissiveFactor[1],
+            gltfMaterial.emissiveFactor[2],
+            gltfMaterial.metallicFactor};
+        material.constants.roughnessUvScaleAlphaCutoff = {
+            gltfMaterial.roughnessFactor,
+            1.0f,
+            1.0f,
+            gltfMaterial.alphaCutoff};
+        material.textures.baseColor = resolveTextureReference(gltfMaterial.baseColorTexture);
+        material.textures.normal = resolveTextureReference(gltfMaterial.normalTexture);
+        material.textures.metallicRoughness = resolveTextureReference(gltfMaterial.metallicRoughnessTexture);
+        material.textures.occlusion = resolveTextureReference(gltfMaterial.occlusionTexture);
+        material.textures.emissive = resolveTextureReference(gltfMaterial.emissiveTexture);
+
+        runtimeMaterialIndices_.push_back(materialManager_->CreateMaterial(material));
+    }
+
+    if (runtimeMaterialIndices_.empty())
+    {
+        MaterialDesc defaultMaterial = {};
+        runtimeMaterialIndices_.push_back(materialManager_->CreateMaterial(defaultMaterial));
+    }
 }
 
 void D3D12Renderer::CreateRenderItems()
 {
-    renderItems_.clear();
-    renderItems_.reserve(3);
+    const auto sceneInstances = GltfSceneBuilder::BuildMeshInstances(*sceneDocument_);
 
-    auto createRenderItem = [&](const DirectX::XMFLOAT3 translation,
+    renderItems_.clear();
+    std::size_t primitiveInstanceCount = 0;
+    for (const GltfSceneMeshInstance& instance : sceneInstances)
+    {
+        if (instance.mesh < sceneMeshPrimitiveAssetIndices_.size())
+        {
+            primitiveInstanceCount += sceneMeshPrimitiveAssetIndices_[instance.mesh].size();
+        }
+    }
+    renderItems_.reserve(primitiveInstanceCount);
+
+    auto createRenderItem = [&](Mesh* mesh,
                                 const std::uint32_t materialIndex,
-                                const float rotationOffset,
-                                const float rotationSpeed)
+                                const DirectX::XMFLOAT4X4& baseTransform)
     {
         RenderItem renderItem = {};
-        renderItem.mesh = mesh_.get();
+        renderItem.mesh = mesh;
         renderItem.materialIndex = materialIndex;
-        renderItem.translation = translation;
-        renderItem.rotationOffset = rotationOffset;
-        renderItem.rotationSpeed = rotationSpeed;
+        renderItem.baseTransform = baseTransform;
+        renderItem.rotationSpeed = 0.0f;
         renderItem.objectConstantBuffer = std::make_unique<ConstantBuffer>();
         renderItem.objectConstantBuffer->Initialize(*device_.Get(), sizeof(ObjectConstants));
         renderItem.objectCbvAllocation = cbvAllocator_->Allocate(1);
@@ -649,14 +734,24 @@ void D3D12Renderer::CreateRenderItems()
         renderItems_.push_back(std::move(renderItem));
     };
 
-    createRenderItem({-0.18f, 0.0f, 0.35f}, 0, 0.0f, 0.9f);
-    renderItems_.back().scale = {1.15f, 1.15f, 1.0f};
+    const std::uint32_t fallbackMaterialIndex = runtimeMaterialIndices_.front();
+    for (const GltfSceneMeshInstance& instance : sceneInstances)
+    {
+        if (instance.mesh >= sceneMeshPrimitiveAssetIndices_.size())
+        {
+            continue;
+        }
 
-    createRenderItem({0.16f, 0.0f, 0.95f}, 1, DirectX::XM_PIDIV4, -1.25f);
-    renderItems_.back().scale = {1.8f, 1.8f, 1.0f};
-
-    createRenderItem({0.0f, -0.58f, 0.65f}, 2, DirectX::XM_PIDIV4 * 0.35f, 0.65f);
-    renderItems_.back().scale = {0.8f, 0.8f, 1.0f};
+        for (const std::uint32_t primitiveAssetIndex : sceneMeshPrimitiveAssetIndices_[instance.mesh])
+        {
+            const ScenePrimitiveAsset& primitiveAsset = scenePrimitiveAssets_.at(primitiveAssetIndex);
+            const std::uint32_t materialIndex =
+                primitiveAsset.material != kInvalidGltfIndex && primitiveAsset.material < runtimeMaterialIndices_.size()
+                    ? runtimeMaterialIndices_[primitiveAsset.material]
+                    : fallbackMaterialIndex;
+            createRenderItem(primitiveAsset.mesh.get(), materialIndex, instance.worldTransform);
+        }
+    }
 }
 
 void D3D12Renderer::UpdateCamera(const float deltaTimeSeconds)
@@ -734,11 +829,16 @@ void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
         DirectX::XMMatrixRotationZ(renderItem.rotationOffset + elapsedSeconds * renderItem.rotationSpeed);
     const DirectX::XMMATRIX translation =
         DirectX::XMMatrixTranslation(renderItem.translation.x, renderItem.translation.y, renderItem.translation.z);
-    const DirectX::XMMATRIX world = scale * rotation * translation;
-    const DirectX::XMMATRIX transform = world * view * projection;
+    const DirectX::XMMATRIX baseTransform = DirectX::XMLoadFloat4x4(&renderItem.baseTransform);
+    const DirectX::XMMATRIX world = scale * rotation * translation * baseTransform;
+    const DirectX::XMMATRIX worldViewProjection = world * view * projection;
+    const DirectX::XMMATRIX worldInverseTranspose = DirectX::XMMatrixInverse(nullptr, world);
 
     ObjectConstants constants = {};
-    DirectX::XMStoreFloat4x4(&constants.mvp, DirectX::XMMatrixTranspose(transform));
+    DirectX::XMStoreFloat4x4(&constants.world, DirectX::XMMatrixTranspose(world));
+    DirectX::XMStoreFloat4x4(&constants.worldViewProjection, DirectX::XMMatrixTranspose(worldViewProjection));
+    DirectX::XMStoreFloat4x4(&constants.worldInverseTranspose, DirectX::XMMatrixTranspose(worldInverseTranspose));
+    constants.cameraPosition = camera_.position;
     renderItem.objectConstantBuffer->Update(std::as_bytes(std::span {&constants, 1}));
 }
 

@@ -75,6 +75,9 @@ Current milestone:
 - Default texture fallbacks for missing material slots and a visible fallback-material smoke case
 - glTF JSON document parsing scaffold, sample asset metadata loading, and a `gltf_probe` asset tool
 - glTF external buffer extraction and runtime GPU mesh upload for a sample triangle primitive
+- glTF material and texture references mapped into runtime `TextureManager` and `MaterialManager` assets
+- glTF node hierarchy traversal, multi-primitive mesh upload, and scene-driven render item assembly
+- glTF normal import, fallback normal generation, and a first lit material shader path
 
 ## Build Requirements
 
@@ -112,7 +115,7 @@ build/vs2022-debug/tools/Debug/ugc_renderer_gltf_probe.exe
 - Add a mesh/material resource split suitable for glTF import
 - Add camera controls and a reusable scene graph transform path
 - Add camera-relative movement and editor-style gizmo interaction
-- Map glTF material and texture references into runtime material assets
+- Extend material binding toward multi-texture PBR inputs and richer shading
 
 ## Controls
 

@@ -1,5 +1,6 @@
 #include "ugc_renderer/asset/gltf_loader.h"
 #include "ugc_renderer/asset/gltf_mesh_builder.h"
+#include "ugc_renderer/asset/gltf_scene_builder.h"
 
 #include <Windows.h>
 
@@ -22,7 +23,7 @@ std::filesystem::path GetDefaultSamplePath()
         throw std::runtime_error("GetModuleFileNameW failed for glTF probe.");
     }
 
-    return std::filesystem::path(modulePath).parent_path() / L"assets" / L"gltf" / L"sample_triangle" / L"sample_triangle.gltf";
+    return std::filesystem::path(modulePath).parent_path() / L"assets" / L"gltf" / L"sample_scene" / L"sample_scene.gltf";
 }
 
 std::string ToConsoleSafeString(const std::filesystem::path& path)
@@ -103,9 +104,37 @@ int main(int argc, char** argv)
             }
         }
 
-        const ugc_renderer::GltfRuntimeMesh runtimeMesh = ugc_renderer::GltfMeshBuilder::BuildFirstPrimitive(document);
-        PrintCount("Runtime vertices", runtimeMesh.vertices.size());
-        PrintCount("Runtime indices", runtimeMesh.indices.size());
+        const auto meshInstances = ugc_renderer::GltfSceneBuilder::BuildMeshInstances(document);
+        PrintCount("Scene mesh instances", meshInstances.size());
+
+        std::size_t primitiveAssetCount = 0;
+        std::size_t scenePrimitiveInstances = 0;
+        std::size_t runtimeVertexCount = 0;
+        std::size_t runtimeIndexCount = 0;
+
+        for (std::uint32_t meshIndex = 0; meshIndex < document.meshes.size(); ++meshIndex)
+        {
+            const auto& mesh = document.meshes[meshIndex];
+            primitiveAssetCount += mesh.primitives.size();
+
+            for (std::uint32_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex)
+            {
+                const ugc_renderer::GltfRuntimeMesh runtimeMesh =
+                    ugc_renderer::GltfMeshBuilder::BuildPrimitive(document, meshIndex, primitiveIndex);
+                runtimeVertexCount += runtimeMesh.vertices.size();
+                runtimeIndexCount += runtimeMesh.indices.size();
+            }
+        }
+
+        for (const auto& instance : meshInstances)
+        {
+            scenePrimitiveInstances += document.meshes[instance.mesh].primitives.size();
+        }
+
+        PrintCount("Primitive assets", primitiveAssetCount);
+        PrintCount("Scene primitive instances", scenePrimitiveInstances);
+        PrintCount("Runtime vertex sum", runtimeVertexCount);
+        PrintCount("Runtime index sum", runtimeIndexCount);
 
         return EXIT_SUCCESS;
     }
