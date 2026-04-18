@@ -81,6 +81,7 @@ Current milestone:
 - Multi-texture material binding for base color, metallic-roughness, occlusion, and emissive glTF inputs
 - Tangent generation/import and tangent-space normal map sampling for glTF materials
 - A first metallic-roughness PBR shader with GGX/Schlick terms, tone mapping, and gamma-correct output
+- Scene-level lighting constants and procedural sky environment reflections for richer PBR shading
 
 ## Build Requirements
 
@@ -118,7 +119,7 @@ build/vs2022-debug/tools/Debug/ugc_renderer_gltf_probe.exe
 - Add a mesh/material resource split suitable for glTF import
 - Add camera controls and a reusable scene graph transform path
 - Add camera-relative movement and editor-style gizmo interaction
-- Add image-based lighting and richer environment/reflection inputs
+- Add cubemap/HDR environment assets and prefiltered image-based lighting
 
 ## Controls
 

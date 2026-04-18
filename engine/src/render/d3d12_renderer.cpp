@@ -46,8 +46,16 @@ struct ObjectConstants
     DirectX::XMFLOAT4X4 world;
     DirectX::XMFLOAT4X4 worldViewProjection;
     DirectX::XMFLOAT4X4 worldInverseTranspose;
-    DirectX::XMFLOAT3 cameraPosition = {};
-    float padding = 0.0f;
+};
+
+struct SceneConstants
+{
+    DirectX::XMFLOAT4 cameraPositionAndEnvironmentIntensity = {0.0f, 0.0f, 0.0f, 0.55f};
+    DirectX::XMFLOAT4 directionalLightDirectionAndIntensity = {0.35f, 0.8f, -0.45f, 4.75f};
+    DirectX::XMFLOAT4 directionalLightColorAndExposure = {1.0f, 0.96f, 0.92f, 1.0f};
+    DirectX::XMFLOAT4 skyZenithColor = {0.24f, 0.42f, 0.78f, 0.0f};
+    DirectX::XMFLOAT4 skyHorizonColor = {0.72f, 0.78f, 0.88f, 0.0f};
+    DirectX::XMFLOAT4 groundColor = {0.07f, 0.05f, 0.04f, 0.0f};
 };
 } // namespace
 
@@ -60,6 +68,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateCommandObjects();
     CreateSwapChain();
     CreateDescriptorHeap();
+    CreateSceneConstants();
     CreateRenderTargets();
     CreateDepthStencil();
     CreateFence();
@@ -94,6 +103,7 @@ void D3D12Renderer::Render()
     auto& commandAllocator = commandAllocators_[frameIndex_];
     ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
     ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
+    UpdateSceneConstants();
 
     D3D12_RESOURCE_BARRIER toRenderTarget = {};
     toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -135,24 +145,27 @@ void D3D12Renderer::Render()
         const std::uint32_t emissiveTextureIndex =
             textureManager_->ResolveTextureIndex(material.desc.textures.emissive, DefaultTextureKind::White);
 
-        commandList_->SetGraphicsRootDescriptorTable(0, renderItem.objectCbvAllocation.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             1,
-            material.cbvAllocation.GetGpuHandle());
+            renderItem.objectCbvAllocation.GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             2,
-            textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
+            material.cbvAllocation.GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             3,
-            textureManager_->GetSrvAllocation(normalTextureIndex).GetGpuHandle());
+            textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             4,
-            textureManager_->GetSrvAllocation(metallicRoughnessTextureIndex).GetGpuHandle());
+            textureManager_->GetSrvAllocation(normalTextureIndex).GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             5,
-            textureManager_->GetSrvAllocation(occlusionTextureIndex).GetGpuHandle());
+            textureManager_->GetSrvAllocation(metallicRoughnessTextureIndex).GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             6,
+            textureManager_->GetSrvAllocation(occlusionTextureIndex).GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            7,
             textureManager_->GetSrvAllocation(emissiveTextureIndex).GetGpuHandle());
         const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
         const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
@@ -349,6 +362,20 @@ void D3D12Renderer::CreateDescriptorHeap()
     cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 64, true);
 }
 
+void D3D12Renderer::CreateSceneConstants()
+{
+    sceneConstantBuffer_ = std::make_unique<ConstantBuffer>();
+    sceneConstantBuffer_->Initialize(*device_.Get(), sizeof(SceneConstants));
+    sceneCbvAllocation_ = cbvAllocator_->Allocate(1);
+
+    D3D12_CONSTANT_BUFFER_VIEW_DESC constantBufferViewDesc = {};
+    constantBufferViewDesc.BufferLocation = sceneConstantBuffer_->GetGpuVirtualAddress();
+    constantBufferViewDesc.SizeInBytes = sceneConstantBuffer_->GetAlignedSizeInBytes();
+    device_->CreateConstantBufferView(&constantBufferViewDesc, sceneCbvAllocation_.GetCpuHandle());
+
+    UpdateSceneConstants();
+}
+
 void D3D12Renderer::CreateRenderTargets()
 {
     for (std::uint32_t index = 0; index < kFrameCount; ++index)
@@ -428,14 +455,14 @@ void D3D12Renderer::CreatePipeline()
     D3D12_DESCRIPTOR_RANGE objectCbvDescriptorRange = {};
     objectCbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
     objectCbvDescriptorRange.NumDescriptors = 1;
-    objectCbvDescriptorRange.BaseShaderRegister = 0;
+    objectCbvDescriptorRange.BaseShaderRegister = 1;
     objectCbvDescriptorRange.RegisterSpace = 0;
     objectCbvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     D3D12_DESCRIPTOR_RANGE materialCbvDescriptorRange = {};
     materialCbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
     materialCbvDescriptorRange.NumDescriptors = 1;
-    materialCbvDescriptorRange.BaseShaderRegister = 1;
+    materialCbvDescriptorRange.BaseShaderRegister = 2;
     materialCbvDescriptorRange.RegisterSpace = 0;
     materialCbvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
@@ -453,21 +480,31 @@ void D3D12Renderer::CreatePipeline()
         textureRanges[textureSlot].BaseShaderRegister = textureSlot;
     }
 
-    std::array<D3D12_ROOT_PARAMETER, 7> rootParameters = {};
+    std::array<D3D12_ROOT_PARAMETER, 8> rootParameters = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
-    rootParameters[0].DescriptorTable.pDescriptorRanges = &objectCbvDescriptorRange;
+    D3D12_DESCRIPTOR_RANGE sceneCbvDescriptorRange = {};
+    sceneCbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    sceneCbvDescriptorRange.NumDescriptors = 1;
+    sceneCbvDescriptorRange.BaseShaderRegister = 0;
+    sceneCbvDescriptorRange.RegisterSpace = 0;
+    sceneCbvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    rootParameters[0].DescriptorTable.pDescriptorRanges = &sceneCbvDescriptorRange;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    rootParameters[1].DescriptorTable.pDescriptorRanges = &materialCbvDescriptorRange;
-    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParameters[1].DescriptorTable.pDescriptorRanges = &objectCbvDescriptorRange;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[2].DescriptorTable.pDescriptorRanges = &materialCbvDescriptorRange;
+    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     for (std::uint32_t textureSlot = 0; textureSlot < textureRanges.size(); ++textureSlot)
     {
-        rootParameters[textureSlot + 2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        rootParameters[textureSlot + 2].DescriptorTable.NumDescriptorRanges = 1;
-        rootParameters[textureSlot + 2].DescriptorTable.pDescriptorRanges = &textureRanges[textureSlot];
-        rootParameters[textureSlot + 2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParameters[textureSlot + 3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParameters[textureSlot + 3].DescriptorTable.NumDescriptorRanges = 1;
+        rootParameters[textureSlot + 3].DescriptorTable.pDescriptorRanges = &textureRanges[textureSlot];
+        rootParameters[textureSlot + 3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     }
 
     D3D12_STATIC_SAMPLER_DESC staticSampler = {};
@@ -841,6 +878,22 @@ void D3D12Renderer::UpdateCamera(const float deltaTimeSeconds)
         cameraTarget_.z - cosPitch * cosYaw * cameraDistance_};
 }
 
+void D3D12Renderer::UpdateSceneConstants()
+{
+    SceneConstants constants = {};
+    constants.cameraPositionAndEnvironmentIntensity = {
+        camera_.position.x,
+        camera_.position.y,
+        camera_.position.z,
+        0.65f};
+    constants.directionalLightDirectionAndIntensity = {0.35f, 0.8f, -0.45f, 5.0f};
+    constants.directionalLightColorAndExposure = {1.0f, 0.96f, 0.92f, 1.0f};
+    constants.skyZenithColor = {0.21f, 0.39f, 0.74f, 0.0f};
+    constants.skyHorizonColor = {0.78f, 0.81f, 0.87f, 0.0f};
+    constants.groundColor = {0.09f, 0.07f, 0.05f, 0.0f};
+    sceneConstantBuffer_->Update(std::as_bytes(std::span {&constants, 1}));
+}
+
 void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
 {
     const float width = static_cast<float>(std::max(window_.GetClientWidth(), 1u));
@@ -874,7 +927,6 @@ void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
     DirectX::XMStoreFloat4x4(&constants.world, DirectX::XMMatrixTranspose(world));
     DirectX::XMStoreFloat4x4(&constants.worldViewProjection, DirectX::XMMatrixTranspose(worldViewProjection));
     DirectX::XMStoreFloat4x4(&constants.worldInverseTranspose, DirectX::XMMatrixTranspose(worldInverseTranspose));
-    constants.cameraPosition = camera_.position;
     renderItem.objectConstantBuffer->Update(std::as_bytes(std::span {&constants, 1}));
 }
 

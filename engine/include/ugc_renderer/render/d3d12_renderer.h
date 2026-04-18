@@ -17,6 +17,7 @@
 
 namespace ugc_renderer
 {
+class ConstantBuffer;
 class DescriptorAllocation;
 class DescriptorAllocator;
 struct GltfDocument;
@@ -60,9 +61,11 @@ private:
     void CreatePipeline();
     void LoadSceneAsset();
     void CreateSceneGeometry();
+    void CreateSceneConstants();
     void CreateTextureAssets();
     void CreateMaterials();
     void CreateRenderItems();
+    void UpdateSceneConstants();
     void UpdateCamera(float deltaTimeSeconds);
     void UpdateRenderItemConstants(RenderItem& renderItem);
     std::uint64_t Signal();
@@ -91,6 +94,8 @@ private:
     std::unique_ptr<DescriptorAllocator> cbvAllocator_;
     std::unique_ptr<DescriptorAllocation> rtvAllocation_;
     std::unique_ptr<DescriptorAllocation> dsvAllocation_;
+    std::unique_ptr<ConstantBuffer> sceneConstantBuffer_;
+    DescriptorAllocation sceneCbvAllocation_ = {};
     std::unique_ptr<TextureManager> textureManager_;
     std::unique_ptr<MaterialManager> materialManager_;
     std::unique_ptr<GltfDocument> sceneDocument_;

@@ -1,13 +1,21 @@
-cbuffer ObjectConstants : register(b0)
+cbuffer SceneConstants : register(b0)
+{
+    float4 cameraPositionAndEnvironmentIntensity;
+    float4 directionalLightDirectionAndIntensity;
+    float4 directionalLightColorAndExposure;
+    float4 skyZenithColor;
+    float4 skyHorizonColor;
+    float4 groundColor;
+}
+
+cbuffer ObjectConstants : register(b1)
 {
     float4x4 world;
     float4x4 worldViewProjection;
     float4x4 worldInverseTranspose;
-    float3 cameraPosition;
-    float objectPadding;
 }
 
-cbuffer MaterialConstants : register(b1)
+cbuffer MaterialConstants : register(b2)
 {
     float4 baseColorFactor;
     float4 emissiveFactorAndMetallic;
@@ -113,6 +121,14 @@ float3 ACESFilm(float3 value)
     return saturate((value * (a * value + b)) / (value * (c * value + d) + e));
 }
 
+float3 EvaluateEnvironment(float3 direction)
+{
+    float upFactor = saturate(direction.y * 0.5f + 0.5f);
+    float horizonFactor = pow(1.0f - saturate(abs(direction.y)), 3.0f);
+    float3 skyBlend = lerp(groundColor.rgb, skyZenithColor.rgb, upFactor);
+    return lerp(skyBlend, skyHorizonColor.rgb, horizonFactor);
+}
+
 float4 PSMain(PSInput input) : SV_TARGET
 {
     float2 uv = input.texCoord * roughnessUvScaleAlphaCutoff.yz;
@@ -133,8 +149,12 @@ float4 PSMain(PSInput input) : SV_TARGET
         worldTangent * tangentSpaceNormal.x +
         worldBitangent * tangentSpaceNormal.y +
         worldNormal * tangentSpaceNormal.z);
-    float3 lightDirection = normalize(float3(0.35f, 0.8f, -0.45f));
-    float3 viewDirection = normalize(cameraPosition - input.worldPosition);
+    float3 lightDirection = normalize(directionalLightDirectionAndIntensity.xyz);
+    float3 lightColor = directionalLightColorAndExposure.rgb;
+    float lightIntensity = directionalLightDirectionAndIntensity.w;
+    float environmentIntensity = cameraPositionAndEnvironmentIntensity.w;
+    float exposure = directionalLightColorAndExposure.w;
+    float3 viewDirection = normalize(cameraPositionAndEnvironmentIntensity.xyz - input.worldPosition);
     float3 halfVector = normalize(lightDirection + viewDirection);
 
     float metallic = saturate(emissiveFactorAndMetallic.w * metallicRoughnessSample.b);
@@ -157,13 +177,21 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     float3 ks = fresnel;
     float3 kd = (1.0f - ks) * (1.0f - metallic);
-    float3 radiance = float3(5.0f, 4.75f, 4.5f);
+    float3 radiance = lightColor * lightIntensity;
     float3 directLighting = (kd * albedo / PI + specular) * radiance * ndotl;
 
-    float3 ambientDiffuse = 0.04f * kd * albedo * occlusion;
-    float3 ambientSpecular = 0.02f * FresnelSchlickRoughness(ndotv, f0, roughness) * occlusion;
+    float3 diffuseEnvironment = EvaluateEnvironment(normal);
+    float3 reflectionDirection = reflect(-viewDirection, normal);
+    float3 roughReflectionDirection = normalize(lerp(reflectionDirection, normal, roughness * roughness));
+    float3 specularEnvironment = EvaluateEnvironment(roughReflectionDirection);
+    float3 ambientDiffuse = diffuseEnvironment * kd * albedo * occlusion * environmentIntensity;
+    float3 ambientSpecular =
+        specularEnvironment *
+        FresnelSchlickRoughness(ndotv, f0, roughness) *
+        occlusion *
+        environmentIntensity;
     float3 color = ambientDiffuse + ambientSpecular + directLighting + emissive;
-    float3 mapped = ACESFilm(color);
+    float3 mapped = ACESFilm(color * exposure);
 
     return float4(LinearToSRGB(mapped), baseColor.a);
 }
