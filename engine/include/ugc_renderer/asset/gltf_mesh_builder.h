@@ -12,6 +12,7 @@ struct GltfRuntimeVertex
     float position[3] = {};
     float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float normal[3] = {0.0f, 0.0f, 1.0f};
+    float tangent[4] = {1.0f, 0.0f, 0.0f, 1.0f};
     float texCoord[2] = {};
 };
 

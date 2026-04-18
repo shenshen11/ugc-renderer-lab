@@ -78,6 +78,8 @@ Current milestone:
 - glTF material and texture references mapped into runtime `TextureManager` and `MaterialManager` assets
 - glTF node hierarchy traversal, multi-primitive mesh upload, and scene-driven render item assembly
 - glTF normal import, fallback normal generation, and a first lit material shader path
+- Multi-texture material binding for base color, metallic-roughness, occlusion, and emissive glTF inputs
+- Tangent generation/import and tangent-space normal map sampling for glTF materials
 
 ## Build Requirements
 
@@ -115,7 +117,7 @@ build/vs2022-debug/tools/Debug/ugc_renderer_gltf_probe.exe
 - Add a mesh/material resource split suitable for glTF import
 - Add camera controls and a reusable scene graph transform path
 - Add camera-relative movement and editor-style gizmo interaction
-- Extend material binding toward multi-texture PBR inputs and richer shading
+- Replace the placeholder lighting model with a fuller metallic-roughness PBR BRDF
 
 ## Controls
 

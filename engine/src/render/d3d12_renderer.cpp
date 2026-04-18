@@ -126,6 +126,14 @@ void D3D12Renderer::Render()
         const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
         const std::uint32_t baseColorTextureIndex =
             textureManager_->ResolveTextureIndex(material.desc.textures.baseColor, DefaultTextureKind::White);
+        const std::uint32_t normalTextureIndex =
+            textureManager_->ResolveTextureIndex(material.desc.textures.normal, DefaultTextureKind::FlatNormal);
+        const std::uint32_t metallicRoughnessTextureIndex =
+            textureManager_->ResolveTextureIndex(material.desc.textures.metallicRoughness, DefaultTextureKind::White);
+        const std::uint32_t occlusionTextureIndex =
+            textureManager_->ResolveTextureIndex(material.desc.textures.occlusion, DefaultTextureKind::White);
+        const std::uint32_t emissiveTextureIndex =
+            textureManager_->ResolveTextureIndex(material.desc.textures.emissive, DefaultTextureKind::White);
 
         commandList_->SetGraphicsRootDescriptorTable(0, renderItem.objectCbvAllocation.GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
@@ -134,6 +142,18 @@ void D3D12Renderer::Render()
         commandList_->SetGraphicsRootDescriptorTable(
             2,
             textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            3,
+            textureManager_->GetSrvAllocation(normalTextureIndex).GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            4,
+            textureManager_->GetSrvAllocation(metallicRoughnessTextureIndex).GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            5,
+            textureManager_->GetSrvAllocation(occlusionTextureIndex).GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            6,
+            textureManager_->GetSrvAllocation(emissiveTextureIndex).GetGpuHandle());
         const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
         const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
         commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -326,7 +346,7 @@ void D3D12Renderer::CreateDescriptorHeap()
     dsvAllocation_ = std::make_unique<DescriptorAllocation>(dsvAllocator_->Allocate(1));
 
     cbvAllocator_ = std::make_unique<DescriptorAllocator>();
-    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 32, true);
+    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 64, true);
 }
 
 void D3D12Renderer::CreateRenderTargets()
@@ -426,7 +446,14 @@ void D3D12Renderer::CreatePipeline()
     srvDescriptorRange.RegisterSpace = 0;
     srvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    std::array<D3D12_ROOT_PARAMETER, 3> rootParameters = {};
+    std::array<D3D12_DESCRIPTOR_RANGE, 5> textureRanges = {};
+    for (std::uint32_t textureSlot = 0; textureSlot < textureRanges.size(); ++textureSlot)
+    {
+        textureRanges[textureSlot] = srvDescriptorRange;
+        textureRanges[textureSlot].BaseShaderRegister = textureSlot;
+    }
+
+    std::array<D3D12_ROOT_PARAMETER, 7> rootParameters = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
     rootParameters[0].DescriptorTable.pDescriptorRanges = &objectCbvDescriptorRange;
@@ -435,10 +462,13 @@ void D3D12Renderer::CreatePipeline()
     rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
     rootParameters[1].DescriptorTable.pDescriptorRanges = &materialCbvDescriptorRange;
     rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rootParameters[2].DescriptorTable.NumDescriptorRanges = 1;
-    rootParameters[2].DescriptorTable.pDescriptorRanges = &srvDescriptorRange;
-    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    for (std::uint32_t textureSlot = 0; textureSlot < textureRanges.size(); ++textureSlot)
+    {
+        rootParameters[textureSlot + 2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParameters[textureSlot + 2].DescriptorTable.NumDescriptorRanges = 1;
+        rootParameters[textureSlot + 2].DescriptorTable.pDescriptorRanges = &textureRanges[textureSlot];
+        rootParameters[textureSlot + 2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    }
 
     D3D12_STATIC_SAMPLER_DESC staticSampler = {};
     staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -494,7 +524,8 @@ void D3D12Renderer::CreatePipeline()
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
     D3D12_BLEND_DESC blendState = {};
@@ -682,6 +713,11 @@ void D3D12Renderer::CreateMaterials()
             1.0f,
             1.0f,
             gltfMaterial.alphaCutoff};
+        material.constants.textureControls = {
+            gltfMaterial.normalTexture.scale,
+            gltfMaterial.occlusionTexture.strength,
+            0.0f,
+            0.0f};
         material.textures.baseColor = resolveTextureReference(gltfMaterial.baseColorTexture);
         material.textures.normal = resolveTextureReference(gltfMaterial.normalTexture);
         material.textures.metallicRoughness = resolveTextureReference(gltfMaterial.metallicRoughnessTexture);

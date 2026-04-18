@@ -58,4 +58,56 @@ Save-Texture -Path $gradientPath -ColorFunc {
     return [System.Drawing.Color]::FromArgb(255, $red, $green, $blue)
 }
 
+$metallicRoughnessPath = Join-Path $outputDirectory "metallic_roughness_mask.png"
+Save-Texture -Path $metallicRoughnessPath -ColorFunc {
+    param($x, $y)
+
+    $roughness = [int](40 + ($x * 215 / 127))
+    $metallic = [int](30 + ($y * 225 / 127))
+    return [System.Drawing.Color]::FromArgb(255, 0, $roughness, $metallic)
+}
+
+$occlusionPath = Join-Path $outputDirectory "occlusion_mask.png"
+Save-Texture -Path $occlusionPath -ColorFunc {
+    param($x, $y)
+
+    $dx = ($x - 63.5) / 63.5
+    $dy = ($y - 63.5) / 63.5
+    $distance = [Math]::Sqrt($dx * $dx + $dy * $dy)
+    $occlusion = [int]([Math]::Max(55, 255 - ($distance * 180)))
+    return [System.Drawing.Color]::FromArgb(255, $occlusion, 0, 0)
+}
+
+$emissivePath = Join-Path $outputDirectory "emissive_mask.png"
+Save-Texture -Path $emissivePath -ColorFunc {
+    param($x, $y)
+
+    $distanceToDiagonal = [Math]::Abs($x - $y)
+    $intensity = [int]([Math]::Max(0, 255 - ($distanceToDiagonal * 8)))
+    $warm = [int]([Math]::Min(255, 80 + ($intensity * 0.7)))
+    return [System.Drawing.Color]::FromArgb(255, $intensity, $warm, 40)
+}
+
+$normalPath = Join-Path $outputDirectory "normal_detail.png"
+Save-Texture -Path $normalPath -ColorFunc {
+    param($x, $y)
+
+    $u = $x / 127.0
+    $v = $y / 127.0
+    $heightDx = [Math]::Cos($u * [Math]::PI * 6.0) * [Math]::Sin($v * [Math]::PI * 4.0)
+    $heightDy = [Math]::Sin($u * [Math]::PI * 6.0) * [Math]::Cos($v * [Math]::PI * 4.0)
+    $nx = -$heightDx * 0.55
+    $ny = -$heightDy * 0.55
+    $nz = 1.0
+    $length = [Math]::Sqrt($nx * $nx + $ny * $ny + $nz * $nz)
+    $nx /= $length
+    $ny /= $length
+    $nz /= $length
+
+    $red = [int](($nx * 0.5 + 0.5) * 255.0)
+    $green = [int](($ny * 0.5 + 0.5) * 255.0)
+    $blue = [int](($nz * 0.5 + 0.5) * 255.0)
+    return [System.Drawing.Color]::FromArgb(255, $red, $green, $blue)
+}
+
 Write-Host "Generated sample textures in $outputDirectory"

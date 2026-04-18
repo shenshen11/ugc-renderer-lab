@@ -14,6 +14,7 @@ struct MaterialConstants
     DirectX::XMFLOAT4 baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
     DirectX::XMFLOAT4 emissiveFactorAndMetallic = {0.0f, 0.0f, 0.0f, 0.0f};
     DirectX::XMFLOAT4 roughnessUvScaleAlphaCutoff = {1.0f, 1.0f, 1.0f, 0.5f};
+    DirectX::XMFLOAT4 textureControls = {1.0f, 1.0f, 0.0f, 0.0f};
 };
 
 struct MaterialTextureSlots

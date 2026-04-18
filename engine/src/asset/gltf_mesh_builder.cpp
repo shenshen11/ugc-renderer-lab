@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <fstream>
@@ -381,6 +382,194 @@ void DecodeNormals(
     }
 }
 
+std::array<float, 3> MakeVector3(const float x, const float y, const float z)
+{
+    return {x, y, z};
+}
+
+std::array<float, 3> Subtract(const std::array<float, 3>& left, const std::array<float, 3>& right)
+{
+    return {
+        left[0] - right[0],
+        left[1] - right[1],
+        left[2] - right[2]};
+}
+
+std::array<float, 3> Add(const std::array<float, 3>& left, const std::array<float, 3>& right)
+{
+    return {
+        left[0] + right[0],
+        left[1] + right[1],
+        left[2] + right[2]};
+}
+
+std::array<float, 3> Multiply(const std::array<float, 3>& vector, const float scalar)
+{
+    return {
+        vector[0] * scalar,
+        vector[1] * scalar,
+        vector[2] * scalar};
+}
+
+float Dot(const std::array<float, 3>& left, const std::array<float, 3>& right)
+{
+    return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+}
+
+std::array<float, 3> Cross(const std::array<float, 3>& left, const std::array<float, 3>& right)
+{
+    return {
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0]};
+}
+
+float LengthSquared(const std::array<float, 3>& vector)
+{
+    return Dot(vector, vector);
+}
+
+std::array<float, 3> Normalize(const std::array<float, 3>& vector)
+{
+    const float lengthSquared = LengthSquared(vector);
+    if (lengthSquared <= std::numeric_limits<float>::epsilon())
+    {
+        return {0.0f, 0.0f, 1.0f};
+    }
+
+    return Multiply(vector, 1.0f / std::sqrt(lengthSquared));
+}
+
+std::array<float, 3> LoadPosition(const GltfRuntimeVertex& vertex)
+{
+    return {vertex.position[0], vertex.position[1], vertex.position[2]};
+}
+
+std::array<float, 3> LoadNormal(const GltfRuntimeVertex& vertex)
+{
+    return {vertex.normal[0], vertex.normal[1], vertex.normal[2]};
+}
+
+std::array<float, 2> LoadTexCoord(const GltfRuntimeVertex& vertex)
+{
+    return {vertex.texCoord[0], vertex.texCoord[1]};
+}
+
+std::array<float, 3> BuildFallbackTangent(const std::array<float, 3>& normal)
+{
+    const std::array<float, 3> referenceAxis =
+        std::abs(normal[2]) < 0.999f ? MakeVector3(0.0f, 0.0f, 1.0f) : MakeVector3(0.0f, 1.0f, 0.0f);
+    return Normalize(Cross(referenceAxis, normal));
+}
+
+void GenerateTangents(GltfRuntimeMesh& mesh)
+{
+    std::vector<std::array<float, 3>> accumulatedTangents(mesh.vertices.size(), MakeVector3(0.0f, 0.0f, 0.0f));
+    std::vector<std::array<float, 3>> accumulatedBitangents(mesh.vertices.size(), MakeVector3(0.0f, 0.0f, 0.0f));
+
+    for (std::size_t indexOffset = 0; indexOffset + 2 < mesh.indices.size(); indexOffset += 3)
+    {
+        const std::uint32_t index0 = mesh.indices[indexOffset + 0];
+        const std::uint32_t index1 = mesh.indices[indexOffset + 1];
+        const std::uint32_t index2 = mesh.indices[indexOffset + 2];
+
+        if (index0 >= mesh.vertices.size() || index1 >= mesh.vertices.size() || index2 >= mesh.vertices.size())
+        {
+            throw std::runtime_error("glTF mesh index points outside decoded vertex range.");
+        }
+
+        const auto position0 = LoadPosition(mesh.vertices[index0]);
+        const auto position1 = LoadPosition(mesh.vertices[index1]);
+        const auto position2 = LoadPosition(mesh.vertices[index2]);
+        const auto texCoord0 = LoadTexCoord(mesh.vertices[index0]);
+        const auto texCoord1 = LoadTexCoord(mesh.vertices[index1]);
+        const auto texCoord2 = LoadTexCoord(mesh.vertices[index2]);
+
+        const auto edge1 = Subtract(position1, position0);
+        const auto edge2 = Subtract(position2, position0);
+        const float deltaU1 = texCoord1[0] - texCoord0[0];
+        const float deltaV1 = texCoord1[1] - texCoord0[1];
+        const float deltaU2 = texCoord2[0] - texCoord0[0];
+        const float deltaV2 = texCoord2[1] - texCoord0[1];
+        const float denominator = deltaU1 * deltaV2 - deltaV1 * deltaU2;
+
+        if (std::abs(denominator) <= std::numeric_limits<float>::epsilon())
+        {
+            continue;
+        }
+
+        const float inverseDeterminant = 1.0f / denominator;
+        const auto tangent = MakeVector3(
+            inverseDeterminant * (deltaV2 * edge1[0] - deltaV1 * edge2[0]),
+            inverseDeterminant * (deltaV2 * edge1[1] - deltaV1 * edge2[1]),
+            inverseDeterminant * (deltaV2 * edge1[2] - deltaV1 * edge2[2]));
+        const auto bitangent = MakeVector3(
+            inverseDeterminant * (-deltaU2 * edge1[0] + deltaU1 * edge2[0]),
+            inverseDeterminant * (-deltaU2 * edge1[1] + deltaU1 * edge2[1]),
+            inverseDeterminant * (-deltaU2 * edge1[2] + deltaU1 * edge2[2]));
+
+        for (const std::uint32_t vertexIndex : {index0, index1, index2})
+        {
+            accumulatedTangents[vertexIndex] = Add(accumulatedTangents[vertexIndex], tangent);
+            accumulatedBitangents[vertexIndex] = Add(accumulatedBitangents[vertexIndex], bitangent);
+        }
+    }
+
+    for (std::size_t vertexIndex = 0; vertexIndex < mesh.vertices.size(); ++vertexIndex)
+    {
+        const auto normal = Normalize(LoadNormal(mesh.vertices[vertexIndex]));
+        auto tangent = accumulatedTangents[vertexIndex];
+        auto bitangent = accumulatedBitangents[vertexIndex];
+
+        if (LengthSquared(tangent) <= std::numeric_limits<float>::epsilon())
+        {
+            tangent = BuildFallbackTangent(normal);
+        }
+
+        tangent = Normalize(Subtract(tangent, Multiply(normal, Dot(normal, tangent))));
+
+        if (LengthSquared(bitangent) <= std::numeric_limits<float>::epsilon())
+        {
+            bitangent = Cross(normal, tangent);
+        }
+
+        const float tangentSign = Dot(Cross(normal, tangent), bitangent) < 0.0f ? -1.0f : 1.0f;
+        mesh.vertices[vertexIndex].tangent[0] = tangent[0];
+        mesh.vertices[vertexIndex].tangent[1] = tangent[1];
+        mesh.vertices[vertexIndex].tangent[2] = tangent[2];
+        mesh.vertices[vertexIndex].tangent[3] = tangentSign;
+    }
+}
+
+void DecodeTangents(
+    const GltfDocument& document,
+    const std::vector<std::vector<std::byte>>& buffers,
+    const GltfPrimitive& primitive,
+    GltfRuntimeMesh& mesh)
+{
+    const std::uint32_t tangentAccessorIndex = FindOptionalAttribute(primitive, "TANGENT");
+    if (tangentAccessorIndex == kInvalidGltfIndex)
+    {
+        GenerateTangents(mesh);
+        return;
+    }
+
+    const GltfAccessor& accessor = GetAccessor(document, tangentAccessorIndex);
+    if (accessor.componentType != kComponentTypeFloat || accessor.type != "VEC4" || accessor.count != mesh.vertices.size())
+    {
+        throw std::runtime_error("glTF TANGENT accessor must be VEC4 float and match POSITION count.");
+    }
+
+    for (std::uint32_t vertexIndex = 0; vertexIndex < accessor.count; ++vertexIndex)
+    {
+        const std::byte* element = GetElementPointer(document, buffers, accessor, vertexIndex);
+        mesh.vertices[vertexIndex].tangent[0] = ReadFloat(element + 0 * sizeof(float));
+        mesh.vertices[vertexIndex].tangent[1] = ReadFloat(element + 1 * sizeof(float));
+        mesh.vertices[vertexIndex].tangent[2] = ReadFloat(element + 2 * sizeof(float));
+        mesh.vertices[vertexIndex].tangent[3] = ReadFloat(element + 3 * sizeof(float));
+    }
+}
+
 void DecodeIndices(
     const GltfDocument& document,
     const std::vector<std::vector<std::byte>>& buffers,
@@ -427,7 +616,7 @@ GltfRuntimeMesh GltfMeshBuilder::BuildPrimitive(
     const std::uint32_t meshIndex,
     const std::uint32_t primitiveIndex)
 {
-    static_assert(sizeof(GltfRuntimeVertex) == 48);
+    static_assert(sizeof(GltfRuntimeVertex) == 64);
 
     if (meshIndex >= document.meshes.size())
     {
@@ -455,6 +644,7 @@ GltfRuntimeMesh GltfMeshBuilder::BuildPrimitive(
     DecodeColors(document, buffers, primitive, mesh);
     DecodeIndices(document, buffers, primitive, mesh);
     DecodeNormals(document, buffers, primitive, mesh);
+    DecodeTangents(document, buffers, primitive, mesh);
     return mesh;
 }
 
