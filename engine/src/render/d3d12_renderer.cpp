@@ -5,6 +5,7 @@
 #include "ugc_renderer/core/logger.h"
 #include "ugc_renderer/core/throw_if_failed.h"
 #include "ugc_renderer/platform/window.h"
+#include "ugc_renderer/render/material_manager.h"
 #include "ugc_renderer/render/mesh.h"
 #include "ugc_renderer/render/shader_compiler.h"
 #include "ugc_renderer/render/texture_manager.h"
@@ -44,10 +45,9 @@ struct Vertex
     float texCoord[2];
 };
 
-struct SceneConstants
+struct ObjectConstants
 {
     DirectX::XMFLOAT4X4 mvp;
-    DirectX::XMFLOAT4 baseColor;
 };
 } // namespace
 
@@ -66,6 +66,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreatePipeline();
     CreateSceneGeometry();
     CreateTextureAssets();
+    CreateMaterials();
     CreateRenderItems();
     UpdateViewport(window_.GetClientWidth(), window_.GetClientHeight());
     Logger::Info("D3D12 renderer initialized.");
@@ -121,11 +122,15 @@ void D3D12Renderer::Render()
     for (auto& renderItem : renderItems_)
     {
         UpdateRenderItemConstants(renderItem);
+        const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
 
-        commandList_->SetGraphicsRootDescriptorTable(0, renderItem.cbvAllocation.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(0, renderItem.objectCbvAllocation.GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             1,
-            textureManager_->GetSrvAllocation(renderItem.material.textureIndex).GetGpuHandle());
+            material.cbvAllocation.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            2,
+            textureManager_->GetSrvAllocation(material.desc.textures.baseColor).GetGpuHandle());
         const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
         const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
         commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -318,7 +323,7 @@ void D3D12Renderer::CreateDescriptorHeap()
     dsvAllocation_ = std::make_unique<DescriptorAllocation>(dsvAllocator_->Allocate(1));
 
     cbvAllocator_ = std::make_unique<DescriptorAllocator>();
-    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16, true);
+    cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 32, true);
 }
 
 void D3D12Renderer::CreateRenderTargets()
@@ -397,12 +402,19 @@ void D3D12Renderer::CreatePipeline()
     const auto vertexShader = ShaderCompiler::CompileFromFile(shaderPath, "VSMain", "vs_5_0");
     const auto pixelShader = ShaderCompiler::CompileFromFile(shaderPath, "PSMain", "ps_5_0");
 
-    D3D12_DESCRIPTOR_RANGE cbvDescriptorRange = {};
-    cbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-    cbvDescriptorRange.NumDescriptors = 1;
-    cbvDescriptorRange.BaseShaderRegister = 0;
-    cbvDescriptorRange.RegisterSpace = 0;
-    cbvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_DESCRIPTOR_RANGE objectCbvDescriptorRange = {};
+    objectCbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    objectCbvDescriptorRange.NumDescriptors = 1;
+    objectCbvDescriptorRange.BaseShaderRegister = 0;
+    objectCbvDescriptorRange.RegisterSpace = 0;
+    objectCbvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_DESCRIPTOR_RANGE materialCbvDescriptorRange = {};
+    materialCbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    materialCbvDescriptorRange.NumDescriptors = 1;
+    materialCbvDescriptorRange.BaseShaderRegister = 1;
+    materialCbvDescriptorRange.RegisterSpace = 0;
+    materialCbvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     D3D12_DESCRIPTOR_RANGE srvDescriptorRange = {};
     srvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -411,15 +423,19 @@ void D3D12Renderer::CreatePipeline()
     srvDescriptorRange.RegisterSpace = 0;
     srvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    std::array<D3D12_ROOT_PARAMETER, 2> rootParameters = {};
+    std::array<D3D12_ROOT_PARAMETER, 3> rootParameters = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
-    rootParameters[0].DescriptorTable.pDescriptorRanges = &cbvDescriptorRange;
-    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rootParameters[0].DescriptorTable.pDescriptorRanges = &objectCbvDescriptorRange;
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
     rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    rootParameters[1].DescriptorTable.pDescriptorRanges = &srvDescriptorRange;
+    rootParameters[1].DescriptorTable.pDescriptorRanges = &materialCbvDescriptorRange;
     rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[2].DescriptorTable.pDescriptorRanges = &srvDescriptorRange;
+    rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC staticSampler = {};
     staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -580,40 +596,56 @@ void D3D12Renderer::CreateTextureAssets()
     loadTexture(GetAssetPath(L"textures/gradient_stripes.png"));
 }
 
+void D3D12Renderer::CreateMaterials()
+{
+    materialManager_ = std::make_unique<MaterialManager>();
+    materialManager_->Initialize(*device_.Get(), *cbvAllocator_);
+
+    MaterialDesc checkerMaterial = {};
+    checkerMaterial.constants.baseColorFactor = {1.0f, 0.75f, 0.75f, 1.0f};
+    checkerMaterial.constants.roughnessUvScaleAlphaCutoff = {0.95f, 1.0f, 1.0f, 0.5f};
+    checkerMaterial.textures.baseColor = 0;
+    materialManager_->CreateMaterial(checkerMaterial);
+
+    MaterialDesc stripeMaterial = {};
+    stripeMaterial.constants.baseColorFactor = {0.75f, 0.85f, 1.0f, 1.0f};
+    stripeMaterial.constants.roughnessUvScaleAlphaCutoff = {0.35f, 1.8f, 1.8f, 0.5f};
+    stripeMaterial.textures.baseColor = 1;
+    materialManager_->CreateMaterial(stripeMaterial);
+}
+
 void D3D12Renderer::CreateRenderItems()
 {
     renderItems_.clear();
     renderItems_.reserve(2);
 
     auto createRenderItem = [&](const DirectX::XMFLOAT3 translation,
-                                const DirectX::XMFLOAT4 baseColor,
+                                const std::uint32_t materialIndex,
                                 const float rotationOffset,
                                 const float rotationSpeed)
     {
         RenderItem renderItem = {};
         renderItem.mesh = mesh_.get();
-        renderItem.material.baseColor = baseColor;
+        renderItem.materialIndex = materialIndex;
         renderItem.translation = translation;
         renderItem.rotationOffset = rotationOffset;
         renderItem.rotationSpeed = rotationSpeed;
-        renderItem.constantBuffer = std::make_unique<ConstantBuffer>();
-        renderItem.constantBuffer->Initialize(*device_.Get(), sizeof(SceneConstants));
-        renderItem.cbvAllocation = cbvAllocator_->Allocate(1);
+        renderItem.objectConstantBuffer = std::make_unique<ConstantBuffer>();
+        renderItem.objectConstantBuffer->Initialize(*device_.Get(), sizeof(ObjectConstants));
+        renderItem.objectCbvAllocation = cbvAllocator_->Allocate(1);
 
         D3D12_CONSTANT_BUFFER_VIEW_DESC constantBufferViewDesc = {};
-        constantBufferViewDesc.BufferLocation = renderItem.constantBuffer->GetGpuVirtualAddress();
-        constantBufferViewDesc.SizeInBytes = renderItem.constantBuffer->GetAlignedSizeInBytes();
-        device_->CreateConstantBufferView(&constantBufferViewDesc, renderItem.cbvAllocation.GetCpuHandle());
+        constantBufferViewDesc.BufferLocation = renderItem.objectConstantBuffer->GetGpuVirtualAddress();
+        constantBufferViewDesc.SizeInBytes = renderItem.objectConstantBuffer->GetAlignedSizeInBytes();
+        device_->CreateConstantBufferView(&constantBufferViewDesc, renderItem.objectCbvAllocation.GetCpuHandle());
 
         renderItems_.push_back(std::move(renderItem));
     };
 
-    createRenderItem({-0.18f, 0.0f, 0.35f}, {1.0f, 0.75f, 0.75f, 1.0f}, 0.0f, 0.9f);
-    renderItems_.back().material.textureIndex = 0;
+    createRenderItem({-0.18f, 0.0f, 0.35f}, 0, 0.0f, 0.9f);
     renderItems_.back().scale = {1.15f, 1.15f, 1.0f};
 
-    createRenderItem({0.16f, 0.0f, 0.95f}, {0.75f, 0.85f, 1.0f, 1.0f}, DirectX::XM_PIDIV4, -1.25f);
-    renderItems_.back().material.textureIndex = 1;
+    createRenderItem({0.16f, 0.0f, 0.95f}, 1, DirectX::XM_PIDIV4, -1.25f);
     renderItems_.back().scale = {1.8f, 1.8f, 1.0f};
 }
 
@@ -695,10 +727,9 @@ void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
     const DirectX::XMMATRIX world = scale * rotation * translation;
     const DirectX::XMMATRIX transform = world * view * projection;
 
-    SceneConstants constants = {};
+    ObjectConstants constants = {};
     DirectX::XMStoreFloat4x4(&constants.mvp, DirectX::XMMatrixTranspose(transform));
-    constants.baseColor = renderItem.material.baseColor;
-    renderItem.constantBuffer->Update(std::as_bytes(std::span {&constants, 1}));
+    renderItem.objectConstantBuffer->Update(std::as_bytes(std::span {&constants, 1}));
 }
 
 std::uint64_t D3D12Renderer::Signal()

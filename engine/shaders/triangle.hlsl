@@ -1,7 +1,13 @@
-cbuffer SceneConstants : register(b0)
+cbuffer ObjectConstants : register(b0)
 {
     float4x4 mvp;
-    float4 baseColor;
+}
+
+cbuffer MaterialConstants : register(b1)
+{
+    float4 baseColorFactor;
+    float4 emissiveFactorAndMetallic;
+    float4 roughnessUvScaleAlphaCutoff;
 }
 
 Texture2D materialTexture : register(t0);
@@ -32,5 +38,6 @@ PSInput VSMain(VSInput input)
 
 float4 PSMain(PSInput input) : SV_TARGET
 {
-    return input.color * baseColor * materialTexture.Sample(materialSampler, input.texCoord);
+    float2 uv = input.texCoord * roughnessUvScaleAlphaCutoff.yz;
+    return input.color * baseColorFactor * materialTexture.Sample(materialSampler, uv);
 }
