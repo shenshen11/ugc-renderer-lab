@@ -73,6 +73,7 @@ Current milestone:
 - WIC-based external image loading, texture asset caching, and SRV-based textured material sampling
 - Shared material assets, per-material constant buffers, and glTF-friendly texture slot layout
 - Default texture fallbacks for missing material slots and a visible fallback-material smoke case
+- glTF JSON document parsing scaffold, sample asset metadata loading, and a `gltf_probe` asset tool
 
 ## Build Requirements
 
@@ -94,6 +95,12 @@ Output executable:
 build/vs2022-debug/sandbox/Debug/ugc_renderer_sandbox.exe
 ```
 
+glTF probe tool:
+
+```text
+build/vs2022-debug/tools/Debug/ugc_renderer_gltf_probe.exe
+```
+
 ## Near-Term Roadmap
 
 - Introduce core utility modules and app lifecycle cleanup
@@ -104,7 +111,7 @@ build/vs2022-debug/sandbox/Debug/ugc_renderer_sandbox.exe
 - Add a mesh/material resource split suitable for glTF import
 - Add camera controls and a reusable scene graph transform path
 - Add camera-relative movement and editor-style gizmo interaction
-- Add glTF mesh/material import scaffolding
+- Add glTF buffer extraction and runtime mesh upload
 
 ## Controls
 

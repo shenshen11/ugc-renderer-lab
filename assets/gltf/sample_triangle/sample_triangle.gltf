@@ -1,0 +1,109 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "UGC Renderer Lab glTF scaffold sample"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "MainScene",
+      "nodes": [0]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "TriangleNode",
+      "mesh": 0,
+      "translation": [0.0, 0.0, 0.0],
+      "rotation": [0.0, 0.0, 0.0, 1.0],
+      "scale": [1.0, 1.0, 1.0]
+    }
+  ],
+  "meshes": [
+    {
+      "name": "TriangleMesh",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "indices": 1,
+          "material": 0,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "CheckerMaterial",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+        "metallicFactor": 0.1,
+        "roughnessFactor": 0.85,
+        "baseColorTexture": {
+          "index": 0,
+          "texCoord": 0
+        }
+      },
+      "doubleSided": true
+    }
+  ],
+  "textures": [
+    {
+      "name": "CheckerTexture",
+      "sampler": 0,
+      "source": 0
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
+  "images": [
+    {
+      "name": "CheckerImage",
+      "uri": "../../textures/checkerboard.png"
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "triangle.bin",
+      "byteLength": 42
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 36,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 36,
+      "byteLength": 6,
+      "target": 34963
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [-0.5, -0.5, 0.0],
+      "max": [0.5, 0.5, 0.0]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ]
+}
