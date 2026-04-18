@@ -3,9 +3,9 @@ cbuffer SceneConstants : register(b0)
     float4 cameraPositionAndEnvironmentIntensity;
     float4 directionalLightDirectionAndIntensity;
     float4 directionalLightColorAndExposure;
-    float4 skyZenithColor;
-    float4 skyHorizonColor;
-    float4 groundColor;
+    float4 cameraRightAndTanHalfFovX;
+    float4 cameraUpAndTanHalfFovY;
+    float4 cameraForward;
 }
 
 cbuffer ObjectConstants : register(b1)
@@ -28,9 +28,14 @@ Texture2D normalTexture : register(t1);
 Texture2D metallicRoughnessTexture : register(t2);
 Texture2D occlusionTexture : register(t3);
 Texture2D emissiveTexture : register(t4);
+Texture2D environmentTexture : register(t5);
 SamplerState materialSampler : register(s0);
 
 static const float PI = 3.14159265359f;
+static const float INV_PI = 0.31830988618f;
+static const float INV_TWO_PI = 0.15915494309f;
+static const float ALPHA_MODE_MASK = 1.0f;
+static const float ALPHA_MODE_BLEND = 2.0f;
 
 struct VSInput
 {
@@ -121,15 +126,62 @@ float3 ACESFilm(float3 value)
     return saturate((value * (a * value + b)) / (value * (c * value + d) + e));
 }
 
-float3 EvaluateEnvironment(float3 direction)
+float2 DirectionToLatLongUv(float3 direction)
 {
-    float upFactor = saturate(direction.y * 0.5f + 0.5f);
-    float horizonFactor = pow(1.0f - saturate(abs(direction.y)), 3.0f);
-    float3 skyBlend = lerp(groundColor.rgb, skyZenithColor.rgb, upFactor);
-    return lerp(skyBlend, skyHorizonColor.rgb, horizonFactor);
+    direction = normalize(direction);
+    float longitude = atan2(direction.z, direction.x);
+    float latitude = acos(clamp(direction.y, -1.0f, 1.0f));
+    return float2(0.5f + longitude * INV_TWO_PI, latitude * INV_PI);
 }
 
-float4 PSMain(PSInput input) : SV_TARGET
+float3 SampleEnvironment(float3 direction)
+{
+    float2 uv = DirectionToLatLongUv(direction);
+    return SRGBToLinear(environmentTexture.Sample(materialSampler, uv).rgb);
+}
+
+float2 EnvBRDFApprox(float roughness, float ndotv)
+{
+    float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
+    float4 c1 = float4(1.0f, 0.0425f, 1.04f, -0.04f);
+    float4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28f * ndotv)) * r.x + r.y;
+    return float2(-1.04f, 1.04f) * a004 + r.zw;
+}
+
+void BuildBasis(float3 normal, out float3 tangent, out float3 bitangent)
+{
+    float3 up = abs(normal.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    tangent = normalize(cross(up, normal));
+    bitangent = normalize(cross(normal, tangent));
+}
+
+float3 SampleSpecularEnvironment(float3 reflectionDirection, float3 surfaceNormal, float roughness)
+{
+    float3 tangent;
+    float3 bitangent;
+    BuildBasis(reflectionDirection, tangent, bitangent);
+
+    float sampleSpread = roughness * roughness * 0.65f;
+    float normalBias = roughness * 0.28f;
+
+    float3 sampleDirection0 = normalize(reflectionDirection);
+    float3 sampleDirection1 = normalize(reflectionDirection + tangent * sampleSpread + surfaceNormal * normalBias);
+    float3 sampleDirection2 = normalize(reflectionDirection - tangent * sampleSpread + surfaceNormal * normalBias);
+    float3 sampleDirection3 = normalize(reflectionDirection + bitangent * sampleSpread + surfaceNormal * normalBias);
+    float3 sampleDirection4 = normalize(reflectionDirection - bitangent * sampleSpread + surfaceNormal * normalBias);
+
+    float3 accumulated =
+        SampleEnvironment(sampleDirection0) * 0.36f +
+        SampleEnvironment(sampleDirection1) * 0.16f +
+        SampleEnvironment(sampleDirection2) * 0.16f +
+        SampleEnvironment(sampleDirection3) * 0.16f +
+        SampleEnvironment(sampleDirection4) * 0.16f;
+
+    return accumulated;
+}
+
+float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 {
     float2 uv = input.texCoord * roughnessUvScaleAlphaCutoff.yz;
     float4 baseSample = baseColorTexture.Sample(materialSampler, uv);
@@ -138,6 +190,14 @@ float4 PSMain(PSInput input) : SV_TARGET
     float4 occlusionSample = occlusionTexture.Sample(materialSampler, uv);
     float3 emissiveSample = emissiveTexture.Sample(materialSampler, uv).rgb;
     float4 baseColor = input.color * baseColorFactor * baseSample;
+    bool isAlphaMask = textureControls.z > ALPHA_MODE_MASK - 0.5f && textureControls.z < ALPHA_MODE_MASK + 0.5f;
+    bool isAlphaBlend = textureControls.z > ALPHA_MODE_BLEND - 0.5f;
+    bool isDoubleSided = textureControls.w > 0.5f;
+
+    if (isAlphaMask)
+    {
+        clip(baseColor.a - roughnessUvScaleAlphaCutoff.w);
+    }
 
     tangentSpaceNormal.xy *= textureControls.xx;
     tangentSpaceNormal.z = sqrt(saturate(1.0f - dot(tangentSpaceNormal.xy, tangentSpaceNormal.xy)));
@@ -149,6 +209,11 @@ float4 PSMain(PSInput input) : SV_TARGET
         worldTangent * tangentSpaceNormal.x +
         worldBitangent * tangentSpaceNormal.y +
         worldNormal * tangentSpaceNormal.z);
+    if (isDoubleSided && !isFrontFace)
+    {
+        normal = -normal;
+    }
+
     float3 lightDirection = normalize(directionalLightDirectionAndIntensity.xyz);
     float3 lightColor = directionalLightColorAndExposure.rgb;
     float lightIntensity = directionalLightDirectionAndIntensity.w;
@@ -180,18 +245,20 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 radiance = lightColor * lightIntensity;
     float3 directLighting = (kd * albedo / PI + specular) * radiance * ndotl;
 
-    float3 diffuseEnvironment = EvaluateEnvironment(normal);
+    float3 diffuseEnvironment = SampleEnvironment(normal);
     float3 reflectionDirection = reflect(-viewDirection, normal);
-    float3 roughReflectionDirection = normalize(lerp(reflectionDirection, normal, roughness * roughness));
-    float3 specularEnvironment = EvaluateEnvironment(roughReflectionDirection);
+    float3 roughReflectionDirection = normalize(lerp(reflectionDirection, normal, roughness * roughness * 0.45f));
+    float3 specularEnvironment = SampleSpecularEnvironment(roughReflectionDirection, normal, roughness);
+    float2 envBrdf = EnvBRDFApprox(roughness, ndotv);
     float3 ambientDiffuse = diffuseEnvironment * kd * albedo * occlusion * environmentIntensity;
     float3 ambientSpecular =
         specularEnvironment *
-        FresnelSchlickRoughness(ndotv, f0, roughness) *
+        (f0 * envBrdf.x + envBrdf.y) *
         occlusion *
         environmentIntensity;
     float3 color = ambientDiffuse + ambientSpecular + directLighting + emissive;
     float3 mapped = ACESFilm(color * exposure);
+    float outputAlpha = isAlphaBlend ? baseColor.a : 1.0f;
 
-    return float4(LinearToSRGB(mapped), baseColor.a);
+    return float4(LinearToSRGB(mapped), outputAlpha);
 }

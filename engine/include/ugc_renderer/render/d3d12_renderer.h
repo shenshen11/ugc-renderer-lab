@@ -8,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -67,7 +68,11 @@ private:
     void CreateRenderItems();
     void UpdateSceneConstants();
     void UpdateCamera(float deltaTimeSeconds);
-    void UpdateRenderItemConstants(RenderItem& renderItem);
+    void UpdateRenderItemConstants(
+        RenderItem& renderItem,
+        const DirectX::XMMATRIX& view,
+        const DirectX::XMMATRIX& projection,
+        float elapsedSeconds);
     std::uint64_t Signal();
     void WaitForFenceValue(std::uint64_t fenceValue);
     void ExecuteImmediateCommands();
@@ -75,6 +80,7 @@ private:
     void MoveToNextFrame();
 
     static constexpr std::uint32_t kFrameCount = 2;
+    static constexpr std::uint32_t kPipelineStateCount = 4;
 
     Window& window_;
 
@@ -88,7 +94,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> depthStencil_;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipelineState_;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kPipelineStateCount> pipelineStates_;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> skyboxPipelineState_;
     std::unique_ptr<DescriptorAllocator> rtvAllocator_;
     std::unique_ptr<DescriptorAllocator> dsvAllocator_;
     std::unique_ptr<DescriptorAllocator> cbvAllocator_;
@@ -102,8 +109,11 @@ private:
     std::vector<ScenePrimitiveAsset> scenePrimitiveAssets_;
     std::vector<std::vector<std::uint32_t>> sceneMeshPrimitiveAssetIndices_;
     std::vector<RenderItem> renderItems_;
+    std::vector<std::uint32_t> opaqueRenderItemIndices_;
+    std::vector<std::uint32_t> transparentRenderItemIndices_;
     std::vector<std::uint32_t> runtimeTextureIndices_;
     std::vector<std::uint32_t> runtimeMaterialIndices_;
+    std::uint32_t environmentTextureIndex_ = std::numeric_limits<std::uint32_t>::max();
     Camera camera_ = {};
     DirectX::XMFLOAT3 cameraTarget_ = {0.0f, 0.0f, 0.65f};
     float cameraOrbitYaw_ = 0.0f;

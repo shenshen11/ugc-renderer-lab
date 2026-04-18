@@ -53,10 +53,53 @@ struct SceneConstants
     DirectX::XMFLOAT4 cameraPositionAndEnvironmentIntensity = {0.0f, 0.0f, 0.0f, 0.55f};
     DirectX::XMFLOAT4 directionalLightDirectionAndIntensity = {0.35f, 0.8f, -0.45f, 4.75f};
     DirectX::XMFLOAT4 directionalLightColorAndExposure = {1.0f, 0.96f, 0.92f, 1.0f};
-    DirectX::XMFLOAT4 skyZenithColor = {0.24f, 0.42f, 0.78f, 0.0f};
-    DirectX::XMFLOAT4 skyHorizonColor = {0.72f, 0.78f, 0.88f, 0.0f};
-    DirectX::XMFLOAT4 groundColor = {0.07f, 0.05f, 0.04f, 0.0f};
+    DirectX::XMFLOAT4 cameraRightAndTanHalfFovX = {1.0f, 0.0f, 0.0f, 1.0f};
+    DirectX::XMFLOAT4 cameraUpAndTanHalfFovY = {0.0f, 1.0f, 0.0f, 1.0f};
+    DirectX::XMFLOAT4 cameraForward = {0.0f, 0.0f, 1.0f, 0.0f};
 };
+
+enum class PipelineStateKind : std::uint32_t
+{
+    OpaqueCullBack = 0,
+    OpaqueDoubleSided = 1,
+    BlendCullBack = 2,
+    BlendDoubleSided = 3,
+};
+
+MaterialAlphaMode ParseAlphaMode(const std::string& alphaMode)
+{
+    if (alphaMode == "MASK")
+    {
+        return MaterialAlphaMode::Mask;
+    }
+
+    if (alphaMode == "BLEND")
+    {
+        return MaterialAlphaMode::Blend;
+    }
+
+    return MaterialAlphaMode::Opaque;
+}
+
+bool IsBlendAlphaMode(const MaterialAlphaMode alphaMode)
+{
+    return alphaMode == MaterialAlphaMode::Blend;
+}
+
+std::uint32_t GetPipelineStateIndex(const MaterialDesc& material)
+{
+    const bool blendEnabled = IsBlendAlphaMode(material.alphaMode);
+    const bool doubleSided = material.doubleSided;
+
+    if (blendEnabled)
+    {
+        return static_cast<std::uint32_t>(
+            doubleSided ? PipelineStateKind::BlendDoubleSided : PipelineStateKind::BlendCullBack);
+    }
+
+    return static_cast<std::uint32_t>(
+        doubleSided ? PipelineStateKind::OpaqueDoubleSided : PipelineStateKind::OpaqueCullBack);
+}
 } // namespace
 
 D3D12Renderer::D3D12Renderer(Window& window)
@@ -105,6 +148,47 @@ void D3D12Renderer::Render()
     ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
     UpdateSceneConstants();
 
+    const float width = static_cast<float>(std::max(window_.GetClientWidth(), 1u));
+    const float height = static_cast<float>(std::max(window_.GetClientHeight(), 1u));
+    const float aspect = width / height;
+    const auto now = std::chrono::steady_clock::now();
+    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
+    const DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
+        DirectX::XMLoadFloat3(&camera_.position),
+        DirectX::XMLoadFloat3(&camera_.target),
+        DirectX::XMLoadFloat3(&camera_.up));
+    const DirectX::XMMATRIX projection = DirectX::XMMatrixPerspectiveFovLH(
+        camera_.verticalFovRadians,
+        aspect,
+        camera_.nearPlane,
+        camera_.farPlane);
+
+    for (auto& renderItem : renderItems_)
+    {
+        UpdateRenderItemConstants(renderItem, view, projection, elapsedSeconds);
+    }
+
+    std::vector<std::uint32_t> transparentDrawOrder = transparentRenderItemIndices_;
+    std::stable_sort(
+        transparentDrawOrder.begin(),
+        transparentDrawOrder.end(),
+        [&](const std::uint32_t leftIndex, const std::uint32_t rightIndex)
+        {
+            const auto& leftCenter = renderItems_[leftIndex].worldCenter;
+            const auto& rightCenter = renderItems_[rightIndex].worldCenter;
+            const float leftDeltaX = leftCenter.x - camera_.position.x;
+            const float leftDeltaY = leftCenter.y - camera_.position.y;
+            const float leftDeltaZ = leftCenter.z - camera_.position.z;
+            const float rightDeltaX = rightCenter.x - camera_.position.x;
+            const float rightDeltaY = rightCenter.y - camera_.position.y;
+            const float rightDeltaZ = rightCenter.z - camera_.position.z;
+            const float leftDistanceSquared =
+                leftDeltaX * leftDeltaX + leftDeltaY * leftDeltaY + leftDeltaZ * leftDeltaZ;
+            const float rightDistanceSquared =
+                rightDeltaX * rightDeltaX + rightDeltaY * rightDeltaY + rightDeltaZ * rightDeltaZ;
+            return leftDistanceSquared > rightDistanceSquared;
+        });
+
     D3D12_RESOURCE_BARRIER toRenderTarget = {};
     toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     toRenderTarget.Transition.pResource = renderTargets_[frameIndex_].Get();
@@ -127,13 +211,26 @@ void D3D12Renderer::Render()
     ID3D12DescriptorHeap* descriptorHeaps[] = {cbvAllocator_->GetHeap()};
     commandList_->SetDescriptorHeaps(static_cast<UINT>(std::size(descriptorHeaps)), descriptorHeaps);
     commandList_->SetGraphicsRootSignature(rootSignature_.Get());
-    commandList_->SetPipelineState(pipelineState_.Get());
     commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    commandList_->SetPipelineState(skyboxPipelineState_.Get());
+    commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        8,
+        textureManager_
+            ->GetSrvAllocation(textureManager_->ResolveTextureIndex(environmentTextureIndex_, DefaultTextureKind::Black))
+            .GetGpuHandle());
+    commandList_->DrawInstanced(3, 1, 0, 0);
 
-    for (auto& renderItem : renderItems_)
+    auto drawRenderItem = [&](RenderItem& renderItem, std::uint32_t& currentPipelineStateIndex)
     {
-        UpdateRenderItemConstants(renderItem);
         const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
+        const std::uint32_t pipelineStateIndex = GetPipelineStateIndex(material.desc);
+        if (pipelineStateIndex != currentPipelineStateIndex)
+        {
+            commandList_->SetPipelineState(pipelineStates_[pipelineStateIndex].Get());
+            currentPipelineStateIndex = pipelineStateIndex;
+        }
+
         const std::uint32_t baseColorTextureIndex =
             textureManager_->ResolveTextureIndex(material.desc.textures.baseColor, DefaultTextureKind::White);
         const std::uint32_t normalTextureIndex =
@@ -167,11 +264,27 @@ void D3D12Renderer::Render()
         commandList_->SetGraphicsRootDescriptorTable(
             7,
             textureManager_->GetSrvAllocation(emissiveTextureIndex).GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            8,
+            textureManager_
+                ->GetSrvAllocation(textureManager_->ResolveTextureIndex(environmentTextureIndex_, DefaultTextureKind::Black))
+                .GetGpuHandle());
         const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
         const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
         commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
         commandList_->IASetIndexBuffer(&indexBufferView);
         commandList_->DrawIndexedInstanced(renderItem.mesh->GetIndexCount(), 1, 0, 0, 0);
+    };
+
+    std::uint32_t currentPipelineStateIndex = static_cast<std::uint32_t>(-1);
+    for (const std::uint32_t renderItemIndex : opaqueRenderItemIndices_)
+    {
+        drawRenderItem(renderItems_[renderItemIndex], currentPipelineStateIndex);
+    }
+
+    for (const std::uint32_t renderItemIndex : transparentDrawOrder)
+    {
+        drawRenderItem(renderItems_[renderItemIndex], currentPipelineStateIndex);
     }
 
     D3D12_RESOURCE_BARRIER toPresent = toRenderTarget;
@@ -448,9 +561,12 @@ void D3D12Renderer::CreateFence()
 
 void D3D12Renderer::CreatePipeline()
 {
-    const auto shaderPath = ShaderCompiler::ResolveShaderPath(L"triangle.hlsl");
-    const auto vertexShader = ShaderCompiler::CompileFromFile(shaderPath, "VSMain", "vs_5_0");
-    const auto pixelShader = ShaderCompiler::CompileFromFile(shaderPath, "PSMain", "ps_5_0");
+    const auto materialShaderPath = ShaderCompiler::ResolveShaderPath(L"triangle.hlsl");
+    const auto vertexShader = ShaderCompiler::CompileFromFile(materialShaderPath, "VSMain", "vs_5_0");
+    const auto pixelShader = ShaderCompiler::CompileFromFile(materialShaderPath, "PSMain", "ps_5_0");
+    const auto skyboxShaderPath = ShaderCompiler::ResolveShaderPath(L"skybox.hlsl");
+    const auto skyboxVertexShader = ShaderCompiler::CompileFromFile(skyboxShaderPath, "VSMain", "vs_5_0");
+    const auto skyboxPixelShader = ShaderCompiler::CompileFromFile(skyboxShaderPath, "PSMain", "ps_5_0");
 
     D3D12_DESCRIPTOR_RANGE objectCbvDescriptorRange = {};
     objectCbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
@@ -473,14 +589,14 @@ void D3D12Renderer::CreatePipeline()
     srvDescriptorRange.RegisterSpace = 0;
     srvDescriptorRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    std::array<D3D12_DESCRIPTOR_RANGE, 5> textureRanges = {};
+    std::array<D3D12_DESCRIPTOR_RANGE, 6> textureRanges = {};
     for (std::uint32_t textureSlot = 0; textureSlot < textureRanges.size(); ++textureSlot)
     {
         textureRanges[textureSlot] = srvDescriptorRange;
         textureRanges[textureSlot].BaseShaderRegister = textureSlot;
     }
 
-    std::array<D3D12_ROOT_PARAMETER, 8> rootParameters = {};
+    std::array<D3D12_ROOT_PARAMETER, 9> rootParameters = {};
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
     D3D12_DESCRIPTOR_RANGE sceneCbvDescriptorRange = {};
@@ -565,59 +681,121 @@ void D3D12Renderer::CreatePipeline()
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     };
 
-    D3D12_BLEND_DESC blendState = {};
-    blendState.AlphaToCoverageEnable = FALSE;
-    blendState.IndependentBlendEnable = FALSE;
-    const D3D12_RENDER_TARGET_BLEND_DESC defaultRenderTargetBlendDesc = {
-        FALSE,
-        FALSE,
-        D3D12_BLEND_ONE,
-        D3D12_BLEND_ZERO,
-        D3D12_BLEND_OP_ADD,
-        D3D12_BLEND_ONE,
-        D3D12_BLEND_ZERO,
-        D3D12_BLEND_OP_ADD,
-        D3D12_LOGIC_OP_NOOP,
-        D3D12_COLOR_WRITE_ENABLE_ALL};
-    for (auto& renderTarget : blendState.RenderTarget)
+    auto createBlendState = [](const bool alphaBlendEnabled)
     {
-        renderTarget = defaultRenderTargetBlendDesc;
-    }
+        D3D12_BLEND_DESC blendState = {};
+        blendState.AlphaToCoverageEnable = FALSE;
+        blendState.IndependentBlendEnable = FALSE;
 
-    D3D12_RASTERIZER_DESC rasterizerState = {};
-    rasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    rasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    rasterizerState.FrontCounterClockwise = FALSE;
-    rasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    rasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    rasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    rasterizerState.DepthClipEnable = TRUE;
-    rasterizerState.MultisampleEnable = FALSE;
-    rasterizerState.AntialiasedLineEnable = FALSE;
-    rasterizerState.ForcedSampleCount = 0;
-    rasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+        D3D12_RENDER_TARGET_BLEND_DESC renderTargetBlendDesc = {
+            FALSE,
+            FALSE,
+            D3D12_BLEND_ONE,
+            D3D12_BLEND_ZERO,
+            D3D12_BLEND_OP_ADD,
+            D3D12_BLEND_ONE,
+            D3D12_BLEND_ZERO,
+            D3D12_BLEND_OP_ADD,
+            D3D12_LOGIC_OP_NOOP,
+            D3D12_COLOR_WRITE_ENABLE_ALL};
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pipelineStateDesc = {};
-    pipelineStateDesc.pRootSignature = rootSignature_.Get();
-    pipelineStateDesc.VS = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
-    pipelineStateDesc.PS = {pixelShader->GetBufferPointer(), pixelShader->GetBufferSize()};
-    pipelineStateDesc.BlendState = blendState;
-    pipelineStateDesc.SampleMask = UINT_MAX;
-    pipelineStateDesc.RasterizerState = rasterizerState;
-    pipelineStateDesc.DepthStencilState.DepthEnable = TRUE;
-    pipelineStateDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pipelineStateDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-    pipelineStateDesc.DepthStencilState.StencilEnable = FALSE;
-    pipelineStateDesc.InputLayout = {inputElements, static_cast<UINT>(std::size(inputElements))};
-    pipelineStateDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pipelineStateDesc.NumRenderTargets = 1;
-    pipelineStateDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    pipelineStateDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pipelineStateDesc.SampleDesc.Count = 1;
+        if (alphaBlendEnabled)
+        {
+            renderTargetBlendDesc.BlendEnable = TRUE;
+            renderTargetBlendDesc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+            renderTargetBlendDesc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+            renderTargetBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
+            renderTargetBlendDesc.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        }
+
+        for (auto& renderTarget : blendState.RenderTarget)
+        {
+            renderTarget = renderTargetBlendDesc;
+        }
+
+        return blendState;
+    };
+
+    auto createRasterizerState = [](const bool doubleSided)
+    {
+        D3D12_RASTERIZER_DESC rasterizerState = {};
+        rasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        rasterizerState.CullMode = doubleSided ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+        rasterizerState.FrontCounterClockwise = TRUE;
+        rasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+        rasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+        rasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+        rasterizerState.DepthClipEnable = TRUE;
+        rasterizerState.MultisampleEnable = FALSE;
+        rasterizerState.AntialiasedLineEnable = FALSE;
+        rasterizerState.ForcedSampleCount = 0;
+        rasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+        return rasterizerState;
+    };
+
+    auto createDepthStencilState = [](const bool alphaBlendEnabled)
+    {
+        D3D12_DEPTH_STENCIL_DESC depthStencilState = {};
+        depthStencilState.DepthEnable = TRUE;
+        depthStencilState.DepthWriteMask =
+            alphaBlendEnabled ? D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL;
+        depthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        depthStencilState.StencilEnable = FALSE;
+        return depthStencilState;
+    };
+
+    auto createPipelineState = [&](const PipelineStateKind pipelineStateKind,
+                                   const bool alphaBlendEnabled,
+                                   const bool doubleSided)
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pipelineStateDesc = {};
+        pipelineStateDesc.pRootSignature = rootSignature_.Get();
+        pipelineStateDesc.VS = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
+        pipelineStateDesc.PS = {pixelShader->GetBufferPointer(), pixelShader->GetBufferSize()};
+        pipelineStateDesc.BlendState = createBlendState(alphaBlendEnabled);
+        pipelineStateDesc.SampleMask = UINT_MAX;
+        pipelineStateDesc.RasterizerState = createRasterizerState(doubleSided);
+        pipelineStateDesc.DepthStencilState = createDepthStencilState(alphaBlendEnabled);
+        pipelineStateDesc.InputLayout = {inputElements, static_cast<UINT>(std::size(inputElements))};
+        pipelineStateDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pipelineStateDesc.NumRenderTargets = 1;
+        pipelineStateDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        pipelineStateDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        pipelineStateDesc.SampleDesc.Count = 1;
+
+        ThrowIfFailed(
+            device_->CreateGraphicsPipelineState(
+                &pipelineStateDesc,
+                IID_PPV_ARGS(&pipelineStates_[static_cast<std::uint32_t>(pipelineStateKind)])),
+            "ID3D12Device::CreateGraphicsPipelineState");
+    };
+
+    createPipelineState(PipelineStateKind::OpaqueCullBack, false, false);
+    createPipelineState(PipelineStateKind::OpaqueDoubleSided, false, true);
+    createPipelineState(PipelineStateKind::BlendCullBack, true, false);
+    createPipelineState(PipelineStateKind::BlendDoubleSided, true, true);
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC skyboxPipelineStateDesc = {};
+    skyboxPipelineStateDesc.pRootSignature = rootSignature_.Get();
+    skyboxPipelineStateDesc.VS = {skyboxVertexShader->GetBufferPointer(), skyboxVertexShader->GetBufferSize()};
+    skyboxPipelineStateDesc.PS = {skyboxPixelShader->GetBufferPointer(), skyboxPixelShader->GetBufferSize()};
+    skyboxPipelineStateDesc.BlendState = createBlendState(false);
+    skyboxPipelineStateDesc.SampleMask = UINT_MAX;
+    skyboxPipelineStateDesc.RasterizerState = createRasterizerState(true);
+    skyboxPipelineStateDesc.DepthStencilState.DepthEnable = FALSE;
+    skyboxPipelineStateDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    skyboxPipelineStateDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    skyboxPipelineStateDesc.DepthStencilState.StencilEnable = FALSE;
+    skyboxPipelineStateDesc.InputLayout = {nullptr, 0};
+    skyboxPipelineStateDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    skyboxPipelineStateDesc.NumRenderTargets = 1;
+    skyboxPipelineStateDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    skyboxPipelineStateDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    skyboxPipelineStateDesc.SampleDesc.Count = 1;
 
     ThrowIfFailed(
-        device_->CreateGraphicsPipelineState(&pipelineStateDesc, IID_PPV_ARGS(&pipelineState_)),
-        "ID3D12Device::CreateGraphicsPipelineState");
+        device_->CreateGraphicsPipelineState(&skyboxPipelineStateDesc, IID_PPV_ARGS(&skyboxPipelineState_)),
+        "ID3D12Device::CreateGraphicsPipelineState(skybox)");
 }
 
 void D3D12Renderer::LoadSceneAsset()
@@ -674,6 +852,7 @@ void D3D12Renderer::CreateTextureAssets()
 {
     textureManager_ = std::make_unique<TextureManager>();
     textureManager_->Initialize(*device_.Get(), *cbvAllocator_);
+    environmentTextureIndex_ = kInvalidTextureIndex;
 
     auto loadTexture = [&](const std::filesystem::path& path)
     {
@@ -712,6 +891,8 @@ void D3D12Renderer::CreateTextureAssets()
 
         runtimeTextureIndices_[textureIndex] = loadTexture(image.resolvedPath);
     }
+
+    environmentTextureIndex_ = loadTexture(GetAssetPath(L"textures/environment_panorama.png"));
 }
 
 void D3D12Renderer::CreateMaterials()
@@ -735,6 +916,8 @@ void D3D12Renderer::CreateMaterials()
     for (const GltfMaterial& gltfMaterial : sceneDocument_->materials)
     {
         MaterialDesc material = {};
+        material.alphaMode = ParseAlphaMode(gltfMaterial.alphaMode);
+        material.doubleSided = gltfMaterial.doubleSided;
         material.constants.baseColorFactor = {
             gltfMaterial.baseColorFactor[0],
             gltfMaterial.baseColorFactor[1],
@@ -753,8 +936,8 @@ void D3D12Renderer::CreateMaterials()
         material.constants.textureControls = {
             gltfMaterial.normalTexture.scale,
             gltfMaterial.occlusionTexture.strength,
-            0.0f,
-            0.0f};
+            static_cast<float>(static_cast<std::uint32_t>(material.alphaMode)),
+            material.doubleSided ? 1.0f : 0.0f};
         material.textures.baseColor = resolveTextureReference(gltfMaterial.baseColorTexture);
         material.textures.normal = resolveTextureReference(gltfMaterial.normalTexture);
         material.textures.metallicRoughness = resolveTextureReference(gltfMaterial.metallicRoughnessTexture);
@@ -776,6 +959,8 @@ void D3D12Renderer::CreateRenderItems()
     const auto sceneInstances = GltfSceneBuilder::BuildMeshInstances(*sceneDocument_);
 
     renderItems_.clear();
+    opaqueRenderItemIndices_.clear();
+    transparentRenderItemIndices_.clear();
     std::size_t primitiveInstanceCount = 0;
     for (const GltfSceneMeshInstance& instance : sceneInstances)
     {
@@ -785,6 +970,8 @@ void D3D12Renderer::CreateRenderItems()
         }
     }
     renderItems_.reserve(primitiveInstanceCount);
+    opaqueRenderItemIndices_.reserve(primitiveInstanceCount);
+    transparentRenderItemIndices_.reserve(primitiveInstanceCount);
 
     auto createRenderItem = [&](Mesh* mesh,
                                 const std::uint32_t materialIndex,
@@ -805,6 +992,16 @@ void D3D12Renderer::CreateRenderItems()
         device_->CreateConstantBufferView(&constantBufferViewDesc, renderItem.objectCbvAllocation.GetCpuHandle());
 
         renderItems_.push_back(std::move(renderItem));
+        const std::uint32_t renderItemIndex = static_cast<std::uint32_t>(renderItems_.size() - 1);
+        const auto& material = materialManager_->GetMaterial(materialIndex);
+        if (IsBlendAlphaMode(material.desc.alphaMode))
+        {
+            transparentRenderItemIndices_.push_back(renderItemIndex);
+        }
+        else
+        {
+            opaqueRenderItemIndices_.push_back(renderItemIndex);
+        }
     };
 
     const std::uint32_t fallbackMaterialIndex = runtimeMaterialIndices_.front();
@@ -880,38 +1077,44 @@ void D3D12Renderer::UpdateCamera(const float deltaTimeSeconds)
 
 void D3D12Renderer::UpdateSceneConstants()
 {
+    const float width = static_cast<float>(std::max(window_.GetClientWidth(), 1u));
+    const float height = static_cast<float>(std::max(window_.GetClientHeight(), 1u));
+    const float aspect = width / height;
+    const float tanHalfFovY = std::tan(camera_.verticalFovRadians * 0.5f);
+    const float tanHalfFovX = tanHalfFovY * aspect;
+    const DirectX::XMVECTOR cameraPosition = DirectX::XMLoadFloat3(&camera_.position);
+    const DirectX::XMVECTOR cameraTarget = DirectX::XMLoadFloat3(&camera_.target);
+    const DirectX::XMVECTOR cameraUp = DirectX::XMLoadFloat3(&camera_.up);
+    const DirectX::XMVECTOR cameraForwardVector =
+        DirectX::XMVector3Normalize(DirectX::XMVectorSubtract(cameraTarget, cameraPosition));
+    const DirectX::XMVECTOR cameraRightVector =
+        DirectX::XMVector3Normalize(DirectX::XMVector3Cross(cameraUp, cameraForwardVector));
+    const DirectX::XMVECTOR orthonormalUpVector =
+        DirectX::XMVector3Normalize(DirectX::XMVector3Cross(cameraForwardVector, cameraRightVector));
+
     SceneConstants constants = {};
     constants.cameraPositionAndEnvironmentIntensity = {
         camera_.position.x,
         camera_.position.y,
         camera_.position.z,
-        0.65f};
-    constants.directionalLightDirectionAndIntensity = {0.35f, 0.8f, -0.45f, 5.0f};
+        1.05f};
+    constants.directionalLightDirectionAndIntensity = {0.35f, 0.8f, -0.45f, 4.25f};
     constants.directionalLightColorAndExposure = {1.0f, 0.96f, 0.92f, 1.0f};
-    constants.skyZenithColor = {0.21f, 0.39f, 0.74f, 0.0f};
-    constants.skyHorizonColor = {0.78f, 0.81f, 0.87f, 0.0f};
-    constants.groundColor = {0.09f, 0.07f, 0.05f, 0.0f};
+    DirectX::XMStoreFloat4(&constants.cameraRightAndTanHalfFovX, cameraRightVector);
+    constants.cameraRightAndTanHalfFovX.w = tanHalfFovX;
+    DirectX::XMStoreFloat4(&constants.cameraUpAndTanHalfFovY, orthonormalUpVector);
+    constants.cameraUpAndTanHalfFovY.w = tanHalfFovY;
+    DirectX::XMStoreFloat4(&constants.cameraForward, cameraForwardVector);
+    constants.cameraForward.w = 0.0f;
     sceneConstantBuffer_->Update(std::as_bytes(std::span {&constants, 1}));
 }
 
-void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
+void D3D12Renderer::UpdateRenderItemConstants(
+    RenderItem& renderItem,
+    const DirectX::XMMATRIX& view,
+    const DirectX::XMMATRIX& projection,
+    const float elapsedSeconds)
 {
-    const float width = static_cast<float>(std::max(window_.GetClientWidth(), 1u));
-    const float height = static_cast<float>(std::max(window_.GetClientHeight(), 1u));
-    const float aspect = width / height;
-
-    const auto now = std::chrono::steady_clock::now();
-    const float elapsedSeconds = std::chrono::duration<float>(now - startTime_).count();
-
-    const DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
-        DirectX::XMLoadFloat3(&camera_.position),
-        DirectX::XMLoadFloat3(&camera_.target),
-        DirectX::XMLoadFloat3(&camera_.up));
-    const DirectX::XMMATRIX projection = DirectX::XMMatrixPerspectiveFovLH(
-        camera_.verticalFovRadians,
-        aspect,
-        camera_.nearPlane,
-        camera_.farPlane);
     const DirectX::XMMATRIX scale =
         DirectX::XMMatrixScaling(renderItem.scale.x, renderItem.scale.y, renderItem.scale.z);
     const DirectX::XMMATRIX rotation =
@@ -922,11 +1125,13 @@ void D3D12Renderer::UpdateRenderItemConstants(RenderItem& renderItem)
     const DirectX::XMMATRIX world = scale * rotation * translation * baseTransform;
     const DirectX::XMMATRIX worldViewProjection = world * view * projection;
     const DirectX::XMMATRIX worldInverseTranspose = DirectX::XMMatrixInverse(nullptr, world);
+    const DirectX::XMVECTOR worldCenter = DirectX::XMVector3TransformCoord(DirectX::XMVectorZero(), world);
 
     ObjectConstants constants = {};
     DirectX::XMStoreFloat4x4(&constants.world, DirectX::XMMatrixTranspose(world));
     DirectX::XMStoreFloat4x4(&constants.worldViewProjection, DirectX::XMMatrixTranspose(worldViewProjection));
     DirectX::XMStoreFloat4x4(&constants.worldInverseTranspose, DirectX::XMMatrixTranspose(worldInverseTranspose));
+    DirectX::XMStoreFloat3(&renderItem.worldCenter, worldCenter);
     renderItem.objectConstantBuffer->Update(std::as_bytes(std::span {&constants, 1}));
 }
 

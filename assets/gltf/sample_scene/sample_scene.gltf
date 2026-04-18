@@ -7,33 +7,131 @@
   "scenes": [
     {
       "name": "MainScene",
-      "nodes": [0]
+      "nodes": [
+        0
+      ]
     }
   ],
   "nodes": [
     {
       "name": "SceneRoot",
-      "translation": [0.0, 0.0, 0.65],
-      "children": [1, 2]
+      "translation": [
+        0.0,
+        0.0,
+        0.65
+      ],
+      "children": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
     },
     {
-      "name": "PairNode",
+      "name": "SingleSidedTriangleNode",
       "mesh": 0,
-      "translation": [0.0, 0.18, 0.0],
-      "rotation": [0.0, 0.258819, 0.0, 0.965926],
-      "scale": [1.1, 1.1, 1.0]
+      "translation": [
+        -1.05,
+        0.12,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ]
     },
     {
-      "name": "AccentNode",
+      "name": "CutoutCardANode",
       "mesh": 1,
-      "translation": [0.0, -0.55, 0.25],
-      "rotation": [-0.300706, 0.0, 0.0, 0.953717],
-      "scale": [0.8, 0.8, 1.0]
+      "translation": [
+        0.0,
+        0.02,
+        0.08
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.25,
+        1.25,
+        1.0
+      ]
+    },
+    {
+      "name": "CutoutCardBNode",
+      "mesh": 1,
+      "translation": [
+        0.0,
+        0.02,
+        0.08
+      ],
+      "rotation": [
+        0.0,
+        0.707107,
+        0.0,
+        0.707107
+      ],
+      "scale": [
+        1.25,
+        1.25,
+        1.0
+      ]
+    },
+    {
+      "name": "BlendBlueCardNode",
+      "mesh": 2,
+      "translation": [
+        1.02,
+        0.1,
+        -0.16
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.05,
+        1.05,
+        1.0
+      ]
+    },
+    {
+      "name": "BlendAmberCardNode",
+      "mesh": 3,
+      "translation": [
+        1.12,
+        -0.04,
+        0.28
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "scale": [
+        1.05,
+        1.05,
+        1.0
+      ]
     }
   ],
   "meshes": [
     {
-      "name": "PairMesh",
+      "name": "SingleSidedTriangleMesh",
       "primitives": [
         {
           "attributes": {
@@ -41,33 +139,53 @@
             "NORMAL": 1,
             "TEXCOORD_0": 2
           },
-          "indices": 9,
+          "indices": 6,
           "material": 0,
           "mode": 4
-        },
+        }
+      ]
+    },
+    {
+      "name": "CutoutCardMesh",
+      "primitives": [
         {
           "attributes": {
             "POSITION": 3,
             "NORMAL": 4,
             "TEXCOORD_0": 5
           },
-          "indices": 10,
+          "indices": 7,
           "material": 1,
           "mode": 4
         }
       ]
     },
     {
-      "name": "AccentMesh",
+      "name": "BlendBlueCardMesh",
       "primitives": [
         {
           "attributes": {
-            "POSITION": 6,
-            "NORMAL": 7,
-            "TEXCOORD_0": 8
+            "POSITION": 3,
+            "NORMAL": 4,
+            "TEXCOORD_0": 5
           },
-          "indices": 11,
-          "material": 0,
+          "indices": 7,
+          "material": 2,
+          "mode": 4
+        }
+      ]
+    },
+    {
+      "name": "BlendAmberCardMesh",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 3,
+            "NORMAL": 4,
+            "TEXCOORD_0": 5
+          },
+          "indices": 7,
+          "material": 3,
           "mode": 4
         }
       ]
@@ -77,11 +195,16 @@
     {
       "name": "CheckerMaterial",
       "pbrMetallicRoughness": {
-        "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+        "baseColorFactor": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
         "metallicFactor": 0.1,
         "roughnessFactor": 0.85,
         "metallicRoughnessTexture": {
-          "index": 2,
+          "index": 1,
           "texCoord": 0
         },
         "baseColorTexture": {
@@ -90,47 +213,96 @@
         }
       },
       "normalTexture": {
-        "index": 5,
+        "index": 4,
         "texCoord": 0,
         "scale": 0.65
       },
       "occlusionTexture": {
-        "index": 3,
+        "index": 2,
         "texCoord": 0,
         "strength": 0.7
       },
-      "doubleSided": true
+      "doubleSided": false
     },
     {
-      "name": "StripeMaterial",
+      "name": "CutoutStripeMaterial",
       "pbrMetallicRoughness": {
-        "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+        "baseColorFactor": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
         "metallicFactor": 0.95,
         "roughnessFactor": 0.8,
         "metallicRoughnessTexture": {
-          "index": 2,
+          "index": 1,
           "texCoord": 0
         },
         "baseColorTexture": {
-          "index": 1,
+          "index": 5,
           "texCoord": 0
         }
       },
       "normalTexture": {
-        "index": 5,
+        "index": 4,
         "texCoord": 0,
         "scale": 1.1
       },
       "occlusionTexture": {
-        "index": 3,
+        "index": 2,
         "texCoord": 0,
         "strength": 0.5
       },
       "emissiveTexture": {
-        "index": 4,
+        "index": 3,
         "texCoord": 0
       },
-      "emissiveFactor": [0.75, 0.35, 0.15],
+      "emissiveFactor": [
+        0.75,
+        0.35,
+        0.15
+      ],
+      "alphaMode": "MASK",
+      "alphaCutoff": 0.5,
+      "doubleSided": true
+    },
+    {
+      "name": "BlendBlueMaterial",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.55,
+          0.86,
+          1.0,
+          0.82
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.3,
+        "baseColorTexture": {
+          "index": 6,
+          "texCoord": 0
+        }
+      },
+      "alphaMode": "BLEND",
+      "doubleSided": true
+    },
+    {
+      "name": "BlendAmberMaterial",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1.0,
+          0.68,
+          0.25,
+          0.74
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.42,
+        "baseColorTexture": {
+          "index": 6,
+          "texCoord": 0
+        }
+      },
+      "alphaMode": "BLEND",
       "doubleSided": true
     }
   ],
@@ -141,29 +313,34 @@
       "source": 0
     },
     {
-      "name": "StripeTexture",
+      "name": "MetallicRoughnessTexture",
       "sampler": 0,
       "source": 1
     },
     {
-      "name": "MetallicRoughnessTexture",
+      "name": "OcclusionTexture",
       "sampler": 0,
       "source": 2
     },
     {
-      "name": "OcclusionTexture",
+      "name": "EmissiveTexture",
       "sampler": 0,
       "source": 3
     },
     {
-      "name": "EmissiveTexture",
+      "name": "NormalTexture",
       "sampler": 0,
       "source": 4
     },
     {
-      "name": "NormalTexture",
+      "name": "CutoutStripeTexture",
       "sampler": 0,
       "source": 5
+    },
+    {
+      "name": "BlendSoftPanelTexture",
+      "sampler": 0,
+      "source": 6
     }
   ],
   "samplers": [
@@ -180,10 +357,6 @@
       "uri": "../../textures/checkerboard.png"
     },
     {
-      "name": "StripeImage",
-      "uri": "../../textures/gradient_stripes.png"
-    },
-    {
       "name": "MetallicRoughnessImage",
       "uri": "../../textures/metallic_roughness_mask.png"
     },
@@ -198,12 +371,20 @@
     {
       "name": "NormalImage",
       "uri": "../../textures/normal_detail.png"
+    },
+    {
+      "name": "CutoutStripeImage",
+      "uri": "../../textures/alpha_cutout_stripes.png"
+    },
+    {
+      "name": "BlendSoftPanelImage",
+      "uri": "../../textures/alpha_blend_soft_panel.png"
     }
   ],
   "buffers": [
     {
       "uri": "scene.bin",
-      "byteLength": 306
+      "byteLength": 242
     }
   ],
   "bufferViews": [
@@ -228,55 +409,31 @@
     {
       "buffer": 0,
       "byteOffset": 96,
-      "byteLength": 36,
+      "byteLength": 48,
       "target": 34962
     },
     {
       "buffer": 0,
-      "byteOffset": 132,
-      "byteLength": 36,
-      "target": 34962
-    },
-    {
-      "buffer": 0,
-      "byteOffset": 168,
-      "byteLength": 24,
+      "byteOffset": 144,
+      "byteLength": 48,
       "target": 34962
     },
     {
       "buffer": 0,
       "byteOffset": 192,
-      "byteLength": 36,
+      "byteLength": 32,
       "target": 34962
     },
     {
       "buffer": 0,
-      "byteOffset": 228,
-      "byteLength": 36,
-      "target": 34962
-    },
-    {
-      "buffer": 0,
-      "byteOffset": 264,
-      "byteLength": 24,
-      "target": 34962
-    },
-    {
-      "buffer": 0,
-      "byteOffset": 288,
+      "byteOffset": 224,
       "byteLength": 6,
       "target": 34963
     },
     {
       "buffer": 0,
-      "byteOffset": 294,
-      "byteLength": 6,
-      "target": 34963
-    },
-    {
-      "buffer": 0,
-      "byteOffset": 300,
-      "byteLength": 6,
+      "byteOffset": 230,
+      "byteLength": 12,
       "target": 34963
     }
   ],
@@ -285,7 +442,17 @@
       "bufferView": 0,
       "componentType": 5126,
       "count": 3,
-      "type": "VEC3"
+      "type": "VEC3",
+      "min": [
+        -0.35,
+        -0.25,
+        0.0
+      ],
+      "max": [
+        0.35,
+        0.4,
+        0.0
+      ]
     },
     {
       "bufferView": 1,
@@ -302,55 +469,41 @@
     {
       "bufferView": 3,
       "componentType": 5126,
-      "count": 3,
-      "type": "VEC3"
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        -0.38,
+        -0.45,
+        0.0
+      ],
+      "max": [
+        0.38,
+        0.45,
+        0.0
+      ]
     },
     {
       "bufferView": 4,
       "componentType": 5126,
-      "count": 3,
+      "count": 4,
       "type": "VEC3"
     },
     {
       "bufferView": 5,
       "componentType": 5126,
-      "count": 3,
+      "count": 4,
       "type": "VEC2"
     },
     {
       "bufferView": 6,
-      "componentType": 5126,
+      "componentType": 5123,
       "count": 3,
-      "type": "VEC3"
+      "type": "SCALAR"
     },
     {
       "bufferView": 7,
-      "componentType": 5126,
-      "count": 3,
-      "type": "VEC3"
-    },
-    {
-      "bufferView": 8,
-      "componentType": 5126,
-      "count": 3,
-      "type": "VEC2"
-    },
-    {
-      "bufferView": 9,
       "componentType": 5123,
-      "count": 3,
-      "type": "SCALAR"
-    },
-    {
-      "bufferView": 10,
-      "componentType": 5123,
-      "count": 3,
-      "type": "SCALAR"
-    },
-    {
-      "bufferView": 11,
-      "componentType": 5123,
-      "count": 3,
+      "count": 6,
       "type": "SCALAR"
     }
   ]

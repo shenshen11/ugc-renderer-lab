@@ -9,6 +9,13 @@ namespace ugc_renderer
 {
 inline constexpr std::uint32_t kInvalidTextureIndex = std::numeric_limits<std::uint32_t>::max();
 
+enum class MaterialAlphaMode : std::uint32_t
+{
+    Opaque = 0,
+    Mask = 1,
+    Blend = 2,
+};
+
 struct MaterialConstants
 {
     DirectX::XMFLOAT4 baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -30,5 +37,7 @@ struct MaterialDesc
 {
     MaterialConstants constants = {};
     MaterialTextureSlots textures = {};
+    MaterialAlphaMode alphaMode = MaterialAlphaMode::Opaque;
+    bool doubleSided = false;
 };
 } // namespace ugc_renderer
