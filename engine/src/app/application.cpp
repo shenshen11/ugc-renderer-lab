@@ -1,6 +1,7 @@
 #include "ugc_renderer/app/application.h"
 
 #include "ugc_renderer/core/logger.h"
+#include "ugc_renderer/core/throw_if_failed.h"
 #include "ugc_renderer/platform/window.h"
 #include "ugc_renderer/render/d3d12_renderer.h"
 
@@ -11,10 +12,31 @@
 
 namespace ugc_renderer
 {
-Application::Application()
-    : window_(std::make_unique<Window>(L"UGC Renderer Lab", 1600, 900))
-    , renderer_(std::make_unique<D3D12Renderer>(*window_))
+ComInitializer::ComInitializer()
 {
+    const HRESULT result = CoInitializeEx(nullptr, COINITBASE_MULTITHREADED);
+    if (result == RPC_E_CHANGED_MODE)
+    {
+        Logger::Info("COM apartment already initialized with a different model; continuing with existing COM state.");
+        return;
+    }
+
+    ThrowIfFailed(result, "CoInitializeEx");
+    shouldUninitialize_ = true;
+}
+
+ComInitializer::~ComInitializer()
+{
+    if (shouldUninitialize_)
+    {
+        CoUninitialize();
+    }
+}
+
+Application::Application()
+{
+    window_ = std::make_unique<Window>(L"UGC Renderer Lab", 1600, 900);
+    renderer_ = std::make_unique<D3D12Renderer>(*window_);
     Logger::Info("Application initialized.");
 }
 
@@ -24,6 +46,9 @@ Application::~Application()
     {
         renderer_->WaitForIdle();
     }
+
+    renderer_.reset();
+    window_.reset();
 }
 
 int Application::Run()

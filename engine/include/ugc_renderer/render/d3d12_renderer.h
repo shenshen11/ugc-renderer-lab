@@ -20,7 +20,7 @@ namespace ugc_renderer
 class DescriptorAllocation;
 class DescriptorAllocator;
 class Mesh;
-class Texture2D;
+class TextureManager;
 class Window;
 
 class D3D12Renderer
@@ -51,7 +51,7 @@ private:
     void CreateFence();
     void CreatePipeline();
     void CreateSceneGeometry();
-    void CreateProceduralTextures();
+    void CreateTextureAssets();
     void CreateRenderItems();
     void UpdateCamera(float deltaTimeSeconds);
     void UpdateRenderItemConstants(RenderItem& renderItem);
@@ -82,8 +82,7 @@ private:
     std::unique_ptr<DescriptorAllocation> rtvAllocation_;
     std::unique_ptr<DescriptorAllocation> dsvAllocation_;
     std::unique_ptr<Mesh> mesh_;
-    std::vector<std::unique_ptr<Texture2D>> textures_;
-    std::vector<DescriptorAllocation> textureSrvAllocations_;
+    std::unique_ptr<TextureManager> textureManager_;
     std::vector<RenderItem> renderItems_;
     Camera camera_ = {};
     DirectX::XMFLOAT3 cameraTarget_ = {0.0f, 0.0f, 0.65f};

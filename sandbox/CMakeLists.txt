@@ -16,4 +16,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${PROJECT_SOURCE_DIR}/engine/shaders
             $<TARGET_FILE_DIR:ugc_renderer_sandbox>/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${PROJECT_SOURCE_DIR}/assets
+            $<TARGET_FILE_DIR:ugc_renderer_sandbox>/assets
 )

@@ -7,16 +7,15 @@
 #include "ugc_renderer/platform/window.h"
 #include "ugc_renderer/render/mesh.h"
 #include "ugc_renderer/render/shader_compiler.h"
-#include "ugc_renderer/render/texture2d.h"
+#include "ugc_renderer/render/texture_manager.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string>
-#include <vector>
 
 #include <DirectXMath.h>
 
@@ -26,6 +25,18 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
+std::filesystem::path GetAssetPath(const std::wstring_view relativePath)
+{
+    std::array<wchar_t, MAX_PATH> modulePath = {};
+    const DWORD length = GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size()));
+    if (length == 0 || length == modulePath.size())
+    {
+        ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()), "GetModuleFileNameW");
+    }
+
+    return std::filesystem::path(modulePath.data()).parent_path() / L"assets" / std::filesystem::path(relativePath);
+}
+
 struct Vertex
 {
     float position[3];
@@ -54,7 +65,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateFence();
     CreatePipeline();
     CreateSceneGeometry();
-    CreateProceduralTextures();
+    CreateTextureAssets();
     CreateRenderItems();
     UpdateViewport(window_.GetClientWidth(), window_.GetClientHeight());
     Logger::Info("D3D12 renderer initialized.");
@@ -114,7 +125,7 @@ void D3D12Renderer::Render()
         commandList_->SetGraphicsRootDescriptorTable(0, renderItem.cbvAllocation.GetGpuHandle());
         commandList_->SetGraphicsRootDescriptorTable(
             1,
-            textureSrvAllocations_[renderItem.material.textureIndex].GetGpuHandle());
+            textureManager_->GetSrvAllocation(renderItem.material.textureIndex).GetGpuHandle());
         const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
         const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
         commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -549,75 +560,24 @@ void D3D12Renderer::CreateSceneGeometry()
     mesh_->ReleaseUploadResources();
 }
 
-void D3D12Renderer::CreateProceduralTextures()
+void D3D12Renderer::CreateTextureAssets()
 {
-    constexpr std::uint32_t textureSize = 128;
+    textureManager_ = std::make_unique<TextureManager>();
+    textureManager_->Initialize(*device_.Get(), *cbvAllocator_);
 
-    auto makeRgba = [](const std::uint8_t r,
-                       const std::uint8_t g,
-                       const std::uint8_t b,
-                       const std::uint8_t a) -> std::uint32_t
-    {
-        return static_cast<std::uint32_t>(r) |
-               (static_cast<std::uint32_t>(g) << 8) |
-               (static_cast<std::uint32_t>(b) << 16) |
-               (static_cast<std::uint32_t>(a) << 24);
-    };
-
-    auto createTexture = [&](const std::vector<std::uint32_t>& pixels)
+    auto loadTexture = [&](const std::filesystem::path& path)
     {
         auto& commandAllocator = commandAllocators_[frameIndex_];
         ThrowIfFailed(commandAllocator->Reset(), "ID3D12CommandAllocator::Reset");
         ThrowIfFailed(commandList_->Reset(commandAllocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset");
-
-        auto texture = std::make_unique<Texture2D>();
-        texture->Initialize(
-            *device_.Get(),
-            *commandList_.Get(),
-            textureSize,
-            textureSize,
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            std::as_bytes(std::span(pixels)));
-
+        const std::uint32_t index = textureManager_->LoadFromFile(*commandList_.Get(), path);
         ExecuteImmediateCommands();
-
-        const DescriptorAllocation srvAllocation = cbvAllocator_->Allocate(1);
-        D3D12_SHADER_RESOURCE_VIEW_DESC shaderResourceViewDesc = {};
-        shaderResourceViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        shaderResourceViewDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        shaderResourceViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        shaderResourceViewDesc.Texture2D.MostDetailedMip = 0;
-        shaderResourceViewDesc.Texture2D.MipLevels = 1;
-        shaderResourceViewDesc.Texture2D.PlaneSlice = 0;
-        shaderResourceViewDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-
-        device_->CreateShaderResourceView(texture->GetResource(), &shaderResourceViewDesc, srvAllocation.GetCpuHandle());
-        texture->ReleaseUploadResource();
-
-        textureSrvAllocations_.push_back(srvAllocation);
-        textures_.push_back(std::move(texture));
+        textureManager_->ReleaseUploadResources();
+        return index;
     };
 
-    std::vector<std::uint32_t> checkerPixels(textureSize * textureSize);
-    std::vector<std::uint32_t> stripePixels(textureSize * textureSize);
-    for (std::uint32_t y = 0; y < textureSize; ++y)
-    {
-        for (std::uint32_t x = 0; x < textureSize; ++x)
-        {
-            const std::uint32_t index = y * textureSize + x;
-            const bool checker = ((x / 16) + (y / 16)) % 2 == 0;
-            checkerPixels[index] = checker ? makeRgba(245, 245, 245, 255) : makeRgba(35, 35, 42, 255);
-
-            const std::uint8_t red = static_cast<std::uint8_t>(80 + (x * 175) / (textureSize - 1));
-            const std::uint8_t green = static_cast<std::uint8_t>(60 + (y * 155) / (textureSize - 1));
-            const bool stripe = ((x + y) / 12) % 2 == 0;
-            const std::uint8_t blue = stripe ? 245 : 120;
-            stripePixels[index] = makeRgba(red, green, blue, 255);
-        }
-    }
-
-    createTexture(checkerPixels);
-    createTexture(stripePixels);
+    loadTexture(GetAssetPath(L"textures/checkerboard.png"));
+    loadTexture(GetAssetPath(L"textures/gradient_stripes.png"));
 }
 
 void D3D12Renderer::CreateRenderItems()

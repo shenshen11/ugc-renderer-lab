@@ -7,9 +7,11 @@ set(UGC_RENDERER_ENGINE_SOURCES
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/constant_buffer.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/descriptor_allocator.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/gpu_buffer.cpp
+    ${UGC_RENDERER_ENGINE_ROOT}/src/render/image_loader.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/mesh.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/d3d12_renderer.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/shader_compiler.cpp
+    ${UGC_RENDERER_ENGINE_ROOT}/src/render/texture_manager.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/texture2d.cpp
 )
 
@@ -39,4 +41,5 @@ target_link_libraries(
         dxguid
         user32
         gdi32
+        windowscodecs
 )

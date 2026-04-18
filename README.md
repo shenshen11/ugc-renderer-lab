@@ -70,7 +70,7 @@ Current milestone:
 - Shared mesh rendering with multiple material-driven render items
 - Perspective camera, view-projection transform, and depth-buffered rendering
 - Keyboard orbit camera controls for interactive scene inspection
-- Procedural texture upload, SRV binding, and textured material sampling
+- WIC-based external image loading, texture asset caching, and SRV-based textured material sampling
 
 ## Build Requirements
 
@@ -102,7 +102,7 @@ build/vs2022-debug/sandbox/Debug/ugc_renderer_sandbox.exe
 - Add a mesh/material resource split suitable for glTF import
 - Add camera controls and a reusable scene graph transform path
 - Add camera-relative movement and editor-style gizmo interaction
-- Add external image loading and material texture asset management
+- Add material parameter blocks and prepare for glTF texture slots
 
 ## Controls
 
