@@ -24,6 +24,7 @@ class DescriptorAllocator;
 struct GltfDocument;
 class MaterialManager;
 class Mesh;
+class RenderGraph;
 class TextureManager;
 class Window;
 
@@ -50,6 +51,8 @@ private:
         std::uint32_t material = 0;
     };
 
+    struct FrameRenderContext;
+
     void EnableDebugLayerIfAvailable();
     void CreateFactory();
     void CreateDevice();
@@ -74,6 +77,15 @@ private:
         const DirectX::XMMATRIX& view,
         const DirectX::XMMATRIX& projection,
         float elapsedSeconds);
+    RenderGraph BuildFrameRenderGraph(FrameRenderContext& context);
+    void RecordShadowDepthPass(const FrameRenderContext& context);
+    void RecordMainColorBeginPass(const FrameRenderContext& context);
+    void RecordSkyboxPass();
+    void RecordOpaqueGeometryPass(FrameRenderContext& context);
+    void RecordTransparentGeometryPass(FrameRenderContext& context);
+    void RecordPresentTransitionPass(const FrameRenderContext& context);
+    void BindCommonGraphicsState();
+    void DrawRenderItem(RenderItem& renderItem, std::uint32_t& currentPipelineStateIndex);
     std::uint64_t Signal();
     void WaitForFenceValue(std::uint64_t fenceValue);
     void ExecuteImmediateCommands();

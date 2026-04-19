@@ -106,6 +106,20 @@ std::uint32_t GetPipelineStateIndex(const MaterialDesc& material)
 }
 } // namespace
 
+struct D3D12Renderer::FrameRenderContext
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE shadowDsvHandle = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
+    D3D12_RESOURCE_BARRIER shadowMapToDepthWrite = {};
+    D3D12_RESOURCE_BARRIER toRenderTarget = {};
+    D3D12_VIEWPORT shadowViewport = {};
+    D3D12_RECT shadowScissorRect = {};
+    std::array<float, 4> clearColor = {0.07f, 0.12f, 0.18f, 1.0f};
+    std::vector<std::uint32_t> transparentDrawOrder;
+    std::uint32_t currentPipelineStateIndex = std::numeric_limits<std::uint32_t>::max();
+};
+
 D3D12Renderer::D3D12Renderer(Window& window)
     : window_(window)
 {
@@ -173,10 +187,11 @@ void D3D12Renderer::Render()
         UpdateRenderItemConstants(renderItem, view, projection, elapsedSeconds);
     }
 
-    std::vector<std::uint32_t> transparentDrawOrder = transparentRenderItemIndices_;
+    FrameRenderContext frameContext = {};
+    frameContext.transparentDrawOrder = transparentRenderItemIndices_;
     std::stable_sort(
-        transparentDrawOrder.begin(),
-        transparentDrawOrder.end(),
+        frameContext.transparentDrawOrder.begin(),
+        frameContext.transparentDrawOrder.end(),
         [&](const std::uint32_t leftIndex, const std::uint32_t rightIndex)
         {
             const auto& leftCenter = renderItems_[leftIndex].worldCenter;
@@ -194,201 +209,31 @@ void D3D12Renderer::Render()
             return leftDistanceSquared > rightDistanceSquared;
         });
 
-    ID3D12DescriptorHeap* descriptorHeaps[] = {cbvAllocator_->GetHeap()};
-    const D3D12_CPU_DESCRIPTOR_HANDLE shadowDsvHandle = shadowDsvAllocation_.GetCpuHandle();
-    const D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvAllocation_->GetCpuHandle(frameIndex_);
-    const D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = dsvAllocation_->GetCpuHandle();
+    frameContext.shadowDsvHandle = shadowDsvAllocation_.GetCpuHandle();
+    frameContext.rtvHandle = rtvAllocation_->GetCpuHandle(frameIndex_);
+    frameContext.dsvHandle = dsvAllocation_->GetCpuHandle();
+    frameContext.shadowMapToDepthWrite.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    frameContext.shadowMapToDepthWrite.Transition.pResource = shadowMap_.Get();
+    frameContext.shadowMapToDepthWrite.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    frameContext.shadowMapToDepthWrite.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    frameContext.shadowMapToDepthWrite.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    frameContext.toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    frameContext.toRenderTarget.Transition.pResource = renderTargets_[frameIndex_].Get();
+    frameContext.toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    frameContext.toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    frameContext.toRenderTarget.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    frameContext.shadowViewport.TopLeftX = 0.0f;
+    frameContext.shadowViewport.TopLeftY = 0.0f;
+    frameContext.shadowViewport.Width = static_cast<float>(kShadowMapSize);
+    frameContext.shadowViewport.Height = static_cast<float>(kShadowMapSize);
+    frameContext.shadowViewport.MinDepth = 0.0f;
+    frameContext.shadowViewport.MaxDepth = 1.0f;
+    frameContext.shadowScissorRect.left = 0;
+    frameContext.shadowScissorRect.top = 0;
+    frameContext.shadowScissorRect.right = static_cast<LONG>(kShadowMapSize);
+    frameContext.shadowScissorRect.bottom = static_cast<LONG>(kShadowMapSize);
 
-    auto bindCommonGraphicsState = [&]()
-    {
-        commandList_->SetDescriptorHeaps(static_cast<UINT>(std::size(descriptorHeaps)), descriptorHeaps);
-        commandList_->SetGraphicsRootSignature(rootSignature_.Get());
-        commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    };
-
-    auto drawRenderItem = [&](RenderItem& renderItem, std::uint32_t& currentPipelineStateIndex)
-    {
-        const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
-        const std::uint32_t pipelineStateIndex = GetPipelineStateIndex(material.desc);
-        if (pipelineStateIndex != currentPipelineStateIndex)
-        {
-            commandList_->SetPipelineState(pipelineStates_[pipelineStateIndex].Get());
-            currentPipelineStateIndex = pipelineStateIndex;
-        }
-
-        const std::uint32_t baseColorTextureIndex =
-            textureManager_->ResolveTextureIndex(material.desc.textures.baseColor, DefaultTextureKind::White);
-        const std::uint32_t normalTextureIndex =
-            textureManager_->ResolveTextureIndex(material.desc.textures.normal, DefaultTextureKind::FlatNormal);
-        const std::uint32_t metallicRoughnessTextureIndex =
-            textureManager_->ResolveTextureIndex(material.desc.textures.metallicRoughness, DefaultTextureKind::White);
-        const std::uint32_t occlusionTextureIndex =
-            textureManager_->ResolveTextureIndex(material.desc.textures.occlusion, DefaultTextureKind::White);
-        const std::uint32_t emissiveTextureIndex =
-            textureManager_->ResolveTextureIndex(material.desc.textures.emissive, DefaultTextureKind::White);
-
-        commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(
-            1,
-            renderItem.objectCbvAllocation.GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(
-            2,
-            material.cbvAllocation.GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(
-            3,
-            textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(
-            4,
-            textureManager_->GetSrvAllocation(normalTextureIndex).GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(
-            5,
-            textureManager_->GetSrvAllocation(metallicRoughnessTextureIndex).GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(
-            6,
-            textureManager_->GetSrvAllocation(occlusionTextureIndex).GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(
-            7,
-            textureManager_->GetSrvAllocation(emissiveTextureIndex).GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(
-            8,
-            textureManager_
-                ->GetSrvAllocation(textureManager_->ResolveTextureIndex(environmentTextureIndex_, DefaultTextureKind::Black))
-                .GetGpuHandle());
-        commandList_->SetGraphicsRootDescriptorTable(9, shadowSrvAllocation_.GetGpuHandle());
-        const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
-        const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
-        commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
-        commandList_->IASetIndexBuffer(&indexBufferView);
-        commandList_->DrawIndexedInstanced(renderItem.mesh->GetIndexCount(), 1, 0, 0, 0);
-    };
-
-    D3D12_RESOURCE_BARRIER shadowMapToDepthWrite = {};
-    shadowMapToDepthWrite.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    shadowMapToDepthWrite.Transition.pResource = shadowMap_.Get();
-    shadowMapToDepthWrite.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    shadowMapToDepthWrite.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    shadowMapToDepthWrite.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    D3D12_VIEWPORT shadowViewport = {};
-    shadowViewport.TopLeftX = 0.0f;
-    shadowViewport.TopLeftY = 0.0f;
-    shadowViewport.Width = static_cast<float>(kShadowMapSize);
-    shadowViewport.Height = static_cast<float>(kShadowMapSize);
-    shadowViewport.MinDepth = 0.0f;
-    shadowViewport.MaxDepth = 1.0f;
-
-    D3D12_RECT shadowScissorRect = {};
-    shadowScissorRect.left = 0;
-    shadowScissorRect.top = 0;
-    shadowScissorRect.right = static_cast<LONG>(kShadowMapSize);
-    shadowScissorRect.bottom = static_cast<LONG>(kShadowMapSize);
-
-    D3D12_RESOURCE_BARRIER toRenderTarget = {};
-    toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    toRenderTarget.Transition.pResource = renderTargets_[frameIndex_].Get();
-    toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    toRenderTarget.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    constexpr std::array<float, 4> clearColor = {0.07f, 0.12f, 0.18f, 1.0f};
-    std::uint32_t currentPipelineStateIndex = std::numeric_limits<std::uint32_t>::max();
-
-    RenderGraph frameGraph;
-    frameGraph.AddPass(
-        "ShadowDepth",
-        [&]()
-        {
-            bindCommonGraphicsState();
-            commandList_->ResourceBarrier(1, &shadowMapToDepthWrite);
-            commandList_->RSSetViewports(1, &shadowViewport);
-            commandList_->RSSetScissorRects(1, &shadowScissorRect);
-            commandList_->OMSetRenderTargets(0, nullptr, FALSE, &shadowDsvHandle);
-            commandList_->ClearDepthStencilView(shadowDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-            commandList_->SetPipelineState(shadowPipelineState_.Get());
-
-            for (const std::uint32_t renderItemIndex : opaqueRenderItemIndices_)
-            {
-                auto& renderItem = renderItems_[renderItemIndex];
-                const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
-                const std::uint32_t baseColorTextureIndex =
-                    textureManager_->ResolveTextureIndex(material.desc.textures.baseColor, DefaultTextureKind::White);
-                commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
-                commandList_->SetGraphicsRootDescriptorTable(1, renderItem.objectCbvAllocation.GetGpuHandle());
-                commandList_->SetGraphicsRootDescriptorTable(2, material.cbvAllocation.GetGpuHandle());
-                commandList_->SetGraphicsRootDescriptorTable(
-                    3,
-                    textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
-                const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
-                const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
-                commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
-                commandList_->IASetIndexBuffer(&indexBufferView);
-                commandList_->DrawIndexedInstanced(renderItem.mesh->GetIndexCount(), 1, 0, 0, 0);
-            }
-
-            D3D12_RESOURCE_BARRIER shadowMapToShaderResource = shadowMapToDepthWrite;
-            shadowMapToShaderResource.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-            shadowMapToShaderResource.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            commandList_->ResourceBarrier(1, &shadowMapToShaderResource);
-        });
-
-    frameGraph.AddPass(
-        "MainColorBegin",
-        [&]()
-        {
-            commandList_->ResourceBarrier(1, &toRenderTarget);
-            commandList_->RSSetViewports(1, &viewport_);
-            commandList_->RSSetScissorRects(1, &scissorRect_);
-            commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
-            commandList_->ClearRenderTargetView(rtvHandle, clearColor.data(), 0, nullptr);
-            commandList_->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-            bindCommonGraphicsState();
-        });
-
-    frameGraph.AddPass(
-        "Skybox",
-        [&]()
-        {
-            commandList_->SetPipelineState(skyboxPipelineState_.Get());
-            commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
-            commandList_->SetGraphicsRootDescriptorTable(
-                8,
-                textureManager_
-                    ->GetSrvAllocation(textureManager_->ResolveTextureIndex(environmentTextureIndex_, DefaultTextureKind::Black))
-                    .GetGpuHandle());
-            commandList_->DrawInstanced(3, 1, 0, 0);
-        });
-
-    frameGraph.AddPass(
-        "OpaqueGeometry",
-        [&]()
-        {
-            currentPipelineStateIndex = std::numeric_limits<std::uint32_t>::max();
-            for (const std::uint32_t renderItemIndex : opaqueRenderItemIndices_)
-            {
-                drawRenderItem(renderItems_[renderItemIndex], currentPipelineStateIndex);
-            }
-        });
-
-    frameGraph.AddPass(
-        "TransparentGeometry",
-        [&]()
-        {
-            for (const std::uint32_t renderItemIndex : transparentDrawOrder)
-            {
-                drawRenderItem(renderItems_[renderItemIndex], currentPipelineStateIndex);
-            }
-        });
-
-    frameGraph.AddPass(
-        "PresentTransition",
-        [&]()
-        {
-            D3D12_RESOURCE_BARRIER toPresent = toRenderTarget;
-            toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-            toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-            commandList_->ResourceBarrier(1, &toPresent);
-        });
-
+    RenderGraph frameGraph = BuildFrameRenderGraph(frameContext);
     frameGraph.Execute();
 
     ThrowIfFailed(commandList_->Close(), "ID3D12GraphicsCommandList::Close");
@@ -398,6 +243,195 @@ void D3D12Renderer::Render()
 
     ThrowIfFailed(swapChain_->Present(1, 0), "IDXGISwapChain::Present");
     MoveToNextFrame();
+}
+
+RenderGraph D3D12Renderer::BuildFrameRenderGraph(FrameRenderContext& context)
+{
+    RenderGraph frameGraph;
+    frameGraph.AddPass(
+        "ShadowDepth",
+        [this, &context]()
+        {
+            RecordShadowDepthPass(context);
+        });
+    frameGraph.AddPass(
+        "MainColorBegin",
+        [this, &context]()
+        {
+            RecordMainColorBeginPass(context);
+        });
+    frameGraph.AddPass(
+        "Skybox",
+        [this]()
+        {
+            RecordSkyboxPass();
+        });
+    frameGraph.AddPass(
+        "OpaqueGeometry",
+        [this, &context]()
+        {
+            RecordOpaqueGeometryPass(context);
+        });
+    frameGraph.AddPass(
+        "TransparentGeometry",
+        [this, &context]()
+        {
+            RecordTransparentGeometryPass(context);
+        });
+    frameGraph.AddPass(
+        "PresentTransition",
+        [this, &context]()
+        {
+            RecordPresentTransitionPass(context);
+        });
+    return frameGraph;
+}
+
+void D3D12Renderer::RecordShadowDepthPass(const FrameRenderContext& context)
+{
+    BindCommonGraphicsState();
+    commandList_->ResourceBarrier(1, &context.shadowMapToDepthWrite);
+    commandList_->RSSetViewports(1, &context.shadowViewport);
+    commandList_->RSSetScissorRects(1, &context.shadowScissorRect);
+    commandList_->OMSetRenderTargets(0, nullptr, FALSE, &context.shadowDsvHandle);
+    commandList_->ClearDepthStencilView(context.shadowDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    commandList_->SetPipelineState(shadowPipelineState_.Get());
+
+    for (const std::uint32_t renderItemIndex : opaqueRenderItemIndices_)
+    {
+        auto& renderItem = renderItems_[renderItemIndex];
+        const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
+        const std::uint32_t baseColorTextureIndex =
+            textureManager_->ResolveTextureIndex(material.desc.textures.baseColor, DefaultTextureKind::White);
+        commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(1, renderItem.objectCbvAllocation.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(2, material.cbvAllocation.GetGpuHandle());
+        commandList_->SetGraphicsRootDescriptorTable(
+            3,
+            textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
+        const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
+        const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
+        commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
+        commandList_->IASetIndexBuffer(&indexBufferView);
+        commandList_->DrawIndexedInstanced(renderItem.mesh->GetIndexCount(), 1, 0, 0, 0);
+    }
+
+    D3D12_RESOURCE_BARRIER shadowMapToShaderResource = context.shadowMapToDepthWrite;
+    shadowMapToShaderResource.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    shadowMapToShaderResource.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    commandList_->ResourceBarrier(1, &shadowMapToShaderResource);
+}
+
+void D3D12Renderer::RecordMainColorBeginPass(const FrameRenderContext& context)
+{
+    commandList_->ResourceBarrier(1, &context.toRenderTarget);
+    commandList_->RSSetViewports(1, &viewport_);
+    commandList_->RSSetScissorRects(1, &scissorRect_);
+    commandList_->OMSetRenderTargets(1, &context.rtvHandle, FALSE, &context.dsvHandle);
+    commandList_->ClearRenderTargetView(context.rtvHandle, context.clearColor.data(), 0, nullptr);
+    commandList_->ClearDepthStencilView(context.dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    BindCommonGraphicsState();
+}
+
+void D3D12Renderer::RecordSkyboxPass()
+{
+    commandList_->SetPipelineState(skyboxPipelineState_.Get());
+    commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        8,
+        textureManager_
+            ->GetSrvAllocation(textureManager_->ResolveTextureIndex(environmentTextureIndex_, DefaultTextureKind::Black))
+            .GetGpuHandle());
+    commandList_->DrawInstanced(3, 1, 0, 0);
+}
+
+void D3D12Renderer::RecordOpaqueGeometryPass(FrameRenderContext& context)
+{
+    context.currentPipelineStateIndex = std::numeric_limits<std::uint32_t>::max();
+    for (const std::uint32_t renderItemIndex : opaqueRenderItemIndices_)
+    {
+        DrawRenderItem(renderItems_[renderItemIndex], context.currentPipelineStateIndex);
+    }
+}
+
+void D3D12Renderer::RecordTransparentGeometryPass(FrameRenderContext& context)
+{
+    for (const std::uint32_t renderItemIndex : context.transparentDrawOrder)
+    {
+        DrawRenderItem(renderItems_[renderItemIndex], context.currentPipelineStateIndex);
+    }
+}
+
+void D3D12Renderer::RecordPresentTransitionPass(const FrameRenderContext& context)
+{
+    D3D12_RESOURCE_BARRIER toPresent = context.toRenderTarget;
+    toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    commandList_->ResourceBarrier(1, &toPresent);
+}
+
+void D3D12Renderer::BindCommonGraphicsState()
+{
+    ID3D12DescriptorHeap* descriptorHeaps[] = {cbvAllocator_->GetHeap()};
+    commandList_->SetDescriptorHeaps(static_cast<UINT>(std::size(descriptorHeaps)), descriptorHeaps);
+    commandList_->SetGraphicsRootSignature(rootSignature_.Get());
+    commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+void D3D12Renderer::DrawRenderItem(RenderItem& renderItem, std::uint32_t& currentPipelineStateIndex)
+{
+    const auto& material = materialManager_->GetMaterial(renderItem.materialIndex);
+    const std::uint32_t pipelineStateIndex = GetPipelineStateIndex(material.desc);
+    if (pipelineStateIndex != currentPipelineStateIndex)
+    {
+        commandList_->SetPipelineState(pipelineStates_[pipelineStateIndex].Get());
+        currentPipelineStateIndex = pipelineStateIndex;
+    }
+
+    const std::uint32_t baseColorTextureIndex =
+        textureManager_->ResolveTextureIndex(material.desc.textures.baseColor, DefaultTextureKind::White);
+    const std::uint32_t normalTextureIndex =
+        textureManager_->ResolveTextureIndex(material.desc.textures.normal, DefaultTextureKind::FlatNormal);
+    const std::uint32_t metallicRoughnessTextureIndex =
+        textureManager_->ResolveTextureIndex(material.desc.textures.metallicRoughness, DefaultTextureKind::White);
+    const std::uint32_t occlusionTextureIndex =
+        textureManager_->ResolveTextureIndex(material.desc.textures.occlusion, DefaultTextureKind::White);
+    const std::uint32_t emissiveTextureIndex =
+        textureManager_->ResolveTextureIndex(material.desc.textures.emissive, DefaultTextureKind::White);
+
+    commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        1,
+        renderItem.objectCbvAllocation.GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        2,
+        material.cbvAllocation.GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        3,
+        textureManager_->GetSrvAllocation(baseColorTextureIndex).GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        4,
+        textureManager_->GetSrvAllocation(normalTextureIndex).GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        5,
+        textureManager_->GetSrvAllocation(metallicRoughnessTextureIndex).GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        6,
+        textureManager_->GetSrvAllocation(occlusionTextureIndex).GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        7,
+        textureManager_->GetSrvAllocation(emissiveTextureIndex).GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(
+        8,
+        textureManager_
+            ->GetSrvAllocation(textureManager_->ResolveTextureIndex(environmentTextureIndex_, DefaultTextureKind::Black))
+            .GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(9, shadowSrvAllocation_.GetGpuHandle());
+    const auto& vertexBufferView = renderItem.mesh->GetVertexBufferView();
+    const auto& indexBufferView = renderItem.mesh->GetIndexBufferView();
+    commandList_->IASetVertexBuffers(0, 1, &vertexBufferView);
+    commandList_->IASetIndexBuffer(&indexBufferView);
+    commandList_->DrawIndexedInstanced(renderItem.mesh->GetIndexCount(), 1, 0, 0, 0);
 }
 
 void D3D12Renderer::Resize(const std::uint32_t width, const std::uint32_t height)
