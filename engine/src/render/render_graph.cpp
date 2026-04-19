@@ -10,6 +10,24 @@
 
 namespace ugc_renderer
 {
+namespace
+{
+const char* ToString(const RenderGraph::ResourceAccess access)
+{
+    switch (access)
+    {
+    case RenderGraph::ResourceAccess::Read:
+        return "Read";
+    case RenderGraph::ResourceAccess::Write:
+        return "Write";
+    case RenderGraph::ResourceAccess::ReadWrite:
+        return "ReadWrite";
+    }
+
+    return "Unknown";
+}
+} // namespace
+
 RenderGraph::ResourceUsage RenderGraph::Read(std::string resourceName)
 {
     return ResourceUsage {
@@ -335,6 +353,103 @@ RenderGraph::CompileResult RenderGraph::Compile() const
     }
 
     return result;
+}
+
+std::string RenderGraph::Describe() const
+{
+    const CompileResult compileResult = Compile();
+
+    std::ostringstream description;
+    description << "RenderGraph:\n";
+
+    if (!importedResources_.empty())
+    {
+        description << "  Imported:";
+        for (const std::string& resourceName : importedResources_)
+        {
+            description << ' ' << resourceName;
+        }
+        description << '\n';
+    }
+
+    if (!exportedResources_.empty())
+    {
+        description << "  Exported:";
+        for (const std::string& resourceName : exportedResources_)
+        {
+            description << ' ' << resourceName;
+        }
+        description << '\n';
+    }
+
+    description << "  Passes:\n";
+    for (std::uint32_t passIndex = 0; passIndex < compileResult.passes.size(); ++passIndex)
+    {
+        const CompiledPass& pass = compileResult.passes[passIndex];
+        description << "    [" << passIndex << "] " << pass.name;
+        if (pass.culled)
+        {
+            description << " (culled)";
+        }
+        description << '\n';
+
+        if (!pass.resources.empty())
+        {
+            description << "      resources:";
+            for (const ResourceUsage& resource : pass.resources)
+            {
+                description << ' ' << resource.resourceName << '(' << ToString(resource.access) << ')';
+            }
+            description << '\n';
+        }
+
+        description << "      deps:";
+        if (pass.dependencyPassIndices.empty())
+        {
+            description << " none";
+        }
+        else
+        {
+            for (const std::uint32_t dependencyPassIndex : pass.dependencyPassIndices)
+            {
+                description << ' ' << compileResult.passes[dependencyPassIndex].name;
+            }
+        }
+        description << '\n';
+    }
+
+    if (!compileResult.edges.empty())
+    {
+        description << "  Edges:\n";
+        for (const DependencyEdge& edge : compileResult.edges)
+        {
+            description << "    " << compileResult.passes[edge.fromPassIndex].name
+                        << " -> " << compileResult.passes[edge.toPassIndex].name
+                        << " via " << edge.resourceName << '\n';
+        }
+    }
+
+    if (!compileResult.executionPassIndices.empty())
+    {
+        description << "  ExecutionOrder:";
+        for (const std::uint32_t passIndex : compileResult.executionPassIndices)
+        {
+            description << ' ' << compileResult.passes[passIndex].name;
+        }
+        description << '\n';
+    }
+
+    if (!compileResult.culledPassIndices.empty())
+    {
+        description << "  Culled:";
+        for (const std::uint32_t passIndex : compileResult.culledPassIndices)
+        {
+            description << ' ' << compileResult.passes[passIndex].name;
+        }
+        description << '\n';
+    }
+
+    return description.str();
 }
 
 void RenderGraph::Validate() const

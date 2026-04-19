@@ -70,6 +70,7 @@ public:
     void AddPass(std::string name, std::initializer_list<ResourceUsage> resources, ExecuteCallback execute);
     void Execute() const;
     [[nodiscard]] CompileResult Compile() const;
+    [[nodiscard]] std::string Describe() const;
     void Validate() const;
 
     [[nodiscard]] const std::vector<Pass>& GetPasses() const noexcept;

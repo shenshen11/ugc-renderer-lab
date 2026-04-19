@@ -137,6 +137,7 @@ private:
     float cameraOrbitYaw_ = 0.0f;
     float cameraOrbitPitch_ = 0.0f;
     float cameraDistance_ = 3.0f;
+    bool renderGraphLogged_ = false;
 
     std::array<std::uint64_t, kFrameCount> frameFenceValues_ = {};
     std::uint64_t nextFenceValue_ = 1;

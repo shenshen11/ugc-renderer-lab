@@ -234,6 +234,11 @@ void D3D12Renderer::Render()
     frameContext.shadowScissorRect.bottom = static_cast<LONG>(kShadowMapSize);
 
     RenderGraph frameGraph = BuildFrameRenderGraph(frameContext);
+    if (!renderGraphLogged_)
+    {
+        Logger::Info(frameGraph.Describe());
+        renderGraphLogged_ = true;
+    }
     frameGraph.Execute();
 
     ThrowIfFailed(commandList_->Close(), "ID3D12GraphicsCommandList::Close");
