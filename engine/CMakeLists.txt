@@ -15,6 +15,7 @@ set(UGC_RENDERER_ENGINE_SOURCES
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/material_manager.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/mesh.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/d3d12_renderer.cpp
+    ${UGC_RENDERER_ENGINE_ROOT}/src/render/render_graph.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/shader_compiler.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/texture_manager.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/texture2d.cpp
