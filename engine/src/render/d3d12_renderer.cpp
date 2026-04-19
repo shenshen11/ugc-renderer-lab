@@ -248,6 +248,7 @@ void D3D12Renderer::Render()
 RenderGraph D3D12Renderer::BuildFrameRenderGraph(FrameRenderContext& context)
 {
     RenderGraph frameGraph;
+    frameGraph.ImportResource("EnvironmentTexture");
     frameGraph.AddPass(
         "ShadowDepth",
         {RenderGraph::Write("ShadowMap")},
