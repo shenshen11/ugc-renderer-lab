@@ -44,6 +44,7 @@ public:
 
     struct CompiledPass
     {
+        std::uint32_t sourcePassIndex = 0;
         std::string name;
         std::vector<ResourceUsage> resources;
         std::vector<std::uint32_t> dependencyPassIndices;
@@ -53,6 +54,7 @@ public:
     {
         std::vector<CompiledPass> passes;
         std::vector<DependencyEdge> edges;
+        std::vector<std::uint32_t> executionPassIndices;
     };
 
     [[nodiscard]] static ResourceUsage Read(std::string resourceName);

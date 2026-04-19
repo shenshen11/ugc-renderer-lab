@@ -84,11 +84,11 @@ void RenderGraph::AddPass(std::string name, std::initializer_list<ResourceUsage>
 
 void RenderGraph::Execute() const
 {
-    Validate();
+    const CompileResult compileResult = Compile();
 
-    for (const Pass& pass : passes_)
+    for (const std::uint32_t passIndex : compileResult.executionPassIndices)
     {
-        pass.execute();
+        passes_[passIndex].execute();
     }
 }
 
@@ -108,6 +108,7 @@ RenderGraph::CompileResult RenderGraph::Compile() const
     for (const Pass& pass : passes_)
     {
         result.passes.push_back(CompiledPass {
+            .sourcePassIndex = static_cast<std::uint32_t>(result.passes.size()),
             .name = pass.name,
             .resources = pass.resources,
             .dependencyPassIndices = {},
@@ -215,6 +216,51 @@ RenderGraph::CompileResult RenderGraph::Compile() const
             resourceState.available = true;
             resourceState.lastWriterPassIndex = passIndex;
             resourceState.readerPassIndices.clear();
+        }
+    }
+
+    std::vector<std::uint32_t> pendingDependencyCounts;
+    std::vector<std::vector<std::uint32_t>> dependentPassIndices;
+    pendingDependencyCounts.resize(result.passes.size());
+    dependentPassIndices.resize(result.passes.size());
+
+    for (std::uint32_t passIndex = 0; passIndex < result.passes.size(); ++passIndex)
+    {
+        pendingDependencyCounts[passIndex] =
+            static_cast<std::uint32_t>(result.passes[passIndex].dependencyPassIndices.size());
+        for (const std::uint32_t dependencyPassIndex : result.passes[passIndex].dependencyPassIndices)
+        {
+            dependentPassIndices[dependencyPassIndex].push_back(passIndex);
+        }
+    }
+
+    std::vector<bool> emittedPasses(result.passes.size(), false);
+    result.executionPassIndices.reserve(result.passes.size());
+
+    while (result.executionPassIndices.size() < result.passes.size())
+    {
+        bool emittedPass = false;
+        for (std::uint32_t passIndex = 0; passIndex < result.passes.size(); ++passIndex)
+        {
+            if (emittedPasses[passIndex] || pendingDependencyCounts[passIndex] != 0)
+            {
+                continue;
+            }
+
+            emittedPasses[passIndex] = true;
+            result.executionPassIndices.push_back(passIndex);
+            emittedPass = true;
+
+            for (const std::uint32_t dependentPassIndex : dependentPassIndices[passIndex])
+            {
+                --pendingDependencyCounts[dependentPassIndex];
+            }
+            break;
+        }
+
+        if (!emittedPass)
+        {
+            throw std::invalid_argument("RenderGraph dependencies contain a cycle.");
         }
     }
 
