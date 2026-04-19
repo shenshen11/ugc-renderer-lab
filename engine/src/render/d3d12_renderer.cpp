@@ -250,36 +250,52 @@ RenderGraph D3D12Renderer::BuildFrameRenderGraph(FrameRenderContext& context)
     RenderGraph frameGraph;
     frameGraph.AddPass(
         "ShadowDepth",
+        {RenderGraph::Write("ShadowMap")},
         [this, &context]()
         {
             RecordShadowDepthPass(context);
         });
     frameGraph.AddPass(
         "MainColorBegin",
+        {RenderGraph::Write("BackBuffer"), RenderGraph::Write("SceneDepth")},
         [this, &context]()
         {
             RecordMainColorBeginPass(context);
         });
     frameGraph.AddPass(
         "Skybox",
+        {RenderGraph::Read("EnvironmentTexture"), RenderGraph::Write("BackBuffer")},
         [this]()
         {
             RecordSkyboxPass();
         });
     frameGraph.AddPass(
         "OpaqueGeometry",
+        {
+            RenderGraph::Read("ShadowMap"),
+            RenderGraph::Read("EnvironmentTexture"),
+            RenderGraph::Write("BackBuffer"),
+            RenderGraph::ReadWrite("SceneDepth"),
+        },
         [this, &context]()
         {
             RecordOpaqueGeometryPass(context);
         });
     frameGraph.AddPass(
         "TransparentGeometry",
+        {
+            RenderGraph::Read("ShadowMap"),
+            RenderGraph::Read("EnvironmentTexture"),
+            RenderGraph::Read("SceneDepth"),
+            RenderGraph::ReadWrite("BackBuffer"),
+        },
         [this, &context]()
         {
             RecordTransparentGeometryPass(context);
         });
     frameGraph.AddPass(
         "PresentTransition",
+        {RenderGraph::ReadWrite("BackBuffer")},
         [this, &context]()
         {
             RecordPresentTransitionPass(context);
