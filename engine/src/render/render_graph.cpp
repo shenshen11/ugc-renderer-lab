@@ -12,6 +12,8 @@ namespace ugc_renderer
 {
 namespace
 {
+constexpr std::uint32_t kInvalidPassIndex = std::numeric_limits<std::uint32_t>::max();
+
 const char* ToString(const RenderGraph::ResourceAccess access)
 {
     switch (access)
@@ -26,40 +28,139 @@ const char* ToString(const RenderGraph::ResourceAccess access)
 
     return "Unknown";
 }
+
+const char* ToString(const RenderGraph::ResourceState state)
+{
+    switch (state)
+    {
+    case RenderGraph::ResourceState::Unknown:
+        return "Unknown";
+    case RenderGraph::ResourceState::ShaderRead:
+        return "ShaderRead";
+    case RenderGraph::ResourceState::RenderTarget:
+        return "RenderTarget";
+    case RenderGraph::ResourceState::DepthWrite:
+        return "DepthWrite";
+    case RenderGraph::ResourceState::Present:
+        return "Present";
+    }
+
+    return "Unknown";
+}
+
+const char* ToString(const RenderGraph::ResourceKind kind)
+{
+    switch (kind)
+    {
+    case RenderGraph::ResourceKind::Internal:
+        return "Internal";
+    case RenderGraph::ResourceKind::Imported:
+        return "Imported";
+    case RenderGraph::ResourceKind::Transient:
+        return "Transient";
+    }
+
+    return "Unknown";
+}
+
+RenderGraph::ResourceState ResolveDesiredState(
+    const RenderGraph::ResourceUsage& usage,
+    const RenderGraph::ResourceState fallbackState)
+{
+    return usage.desiredState != RenderGraph::ResourceState::Unknown ? usage.desiredState : fallbackState;
+}
+
+std::vector<std::string> GetSortedKeys(const std::unordered_map<std::string, RenderGraph::ResourceState>& resources)
+{
+    std::vector<std::string> names;
+    names.reserve(resources.size());
+    for (const auto& [resourceName, initialState] : resources)
+    {
+        (void)initialState;
+        names.push_back(resourceName);
+    }
+
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+std::vector<std::string> GetSortedKeys(const std::unordered_set<std::string>& resources)
+{
+    std::vector<std::string> names(resources.begin(), resources.end());
+    std::sort(names.begin(), names.end());
+    return names;
+}
 } // namespace
 
-RenderGraph::ResourceUsage RenderGraph::Read(std::string resourceName)
+RenderGraph::ResourceUsage RenderGraph::Read(std::string resourceName, const ResourceState desiredState)
 {
     return ResourceUsage {
         .resourceName = std::move(resourceName),
         .access = ResourceAccess::Read,
+        .desiredState = desiredState,
     };
 }
 
-RenderGraph::ResourceUsage RenderGraph::Write(std::string resourceName)
+RenderGraph::ResourceUsage RenderGraph::Write(std::string resourceName, const ResourceState desiredState)
 {
     return ResourceUsage {
         .resourceName = std::move(resourceName),
         .access = ResourceAccess::Write,
+        .desiredState = desiredState,
     };
 }
 
-RenderGraph::ResourceUsage RenderGraph::ReadWrite(std::string resourceName)
+RenderGraph::ResourceUsage RenderGraph::ReadWrite(std::string resourceName, const ResourceState desiredState)
 {
     return ResourceUsage {
         .resourceName = std::move(resourceName),
         .access = ResourceAccess::ReadWrite,
+        .desiredState = desiredState,
     };
 }
 
-void RenderGraph::ImportResource(std::string resourceName)
+void RenderGraph::ImportResource(std::string resourceName, const ResourceState initialState)
 {
     if (resourceName.empty())
     {
         throw std::invalid_argument("RenderGraph imported resource requires a non-empty resource name.");
     }
 
-    importedResources_.insert(std::move(resourceName));
+    if (transientResources_.contains(resourceName))
+    {
+        throw std::invalid_argument("RenderGraph resource cannot be both imported and transient.");
+    }
+
+    const auto [iterator, inserted] = importedResources_.emplace(std::move(resourceName), initialState);
+    if (!inserted)
+    {
+        if (iterator->second != initialState)
+        {
+            throw std::invalid_argument("RenderGraph imported resource is declared multiple times with different states.");
+        }
+    }
+}
+
+void RenderGraph::DeclareTransientResource(std::string resourceName, const ResourceState initialState)
+{
+    if (resourceName.empty())
+    {
+        throw std::invalid_argument("RenderGraph transient resource requires a non-empty resource name.");
+    }
+
+    if (importedResources_.contains(resourceName))
+    {
+        throw std::invalid_argument("RenderGraph resource cannot be both transient and imported.");
+    }
+
+    const auto [iterator, inserted] = transientResources_.emplace(std::move(resourceName), initialState);
+    if (!inserted)
+    {
+        if (iterator->second != initialState)
+        {
+            throw std::invalid_argument("RenderGraph transient resource is declared multiple times with different states.");
+        }
+    }
 }
 
 void RenderGraph::ExportResource(std::string resourceName)
@@ -75,6 +176,7 @@ void RenderGraph::ExportResource(std::string resourceName)
 void RenderGraph::Reset()
 {
     importedResources_.clear();
+    transientResources_.clear();
     exportedResources_.clear();
     passes_.clear();
 }
@@ -123,12 +225,10 @@ void RenderGraph::Execute() const
 
 RenderGraph::CompileResult RenderGraph::Compile() const
 {
-    constexpr std::uint32_t kInvalidPassIndex = std::numeric_limits<std::uint32_t>::max();
-
-    struct ResourceState
+    struct DependencyResourceState
     {
         bool available = false;
-        std::uint32_t lastWriterPassIndex = std::numeric_limits<std::uint32_t>::max();
+        std::uint32_t lastWriterPassIndex = kInvalidPassIndex;
         std::vector<std::uint32_t> readerPassIndices;
     };
 
@@ -140,17 +240,68 @@ RenderGraph::CompileResult RenderGraph::Compile() const
             .sourcePassIndex = static_cast<std::uint32_t>(result.passes.size()),
             .name = pass.name,
             .resources = pass.resources,
+            .transitions = {},
             .dependencyPassIndices = {},
         });
     }
 
     std::unordered_set<std::string> passNames;
-    std::unordered_map<std::string, ResourceState> resourceStates;
+    std::unordered_map<std::string, DependencyResourceState> dependencyResources;
+    std::unordered_map<std::string, std::uint32_t> lastAccessPassByResource;
     std::unordered_map<std::string, std::uint32_t> lastWriterPassByResource;
+    std::unordered_map<std::string, std::size_t> resourceSummaryIndices;
 
-    for (const std::string& importedResource : importedResources_)
+    auto ensureCompiledResource = [&](const std::string& resourceName) -> CompileResult::CompiledResource&
     {
-        resourceStates[importedResource].available = true;
+        const auto existingIndex = resourceSummaryIndices.find(resourceName);
+        if (existingIndex != resourceSummaryIndices.end())
+        {
+            return result.resources[existingIndex->second];
+        }
+
+        CompileResult::CompiledResource compiledResource = {};
+        compiledResource.name = resourceName;
+        compiledResource.firstPassIndex = kInvalidPassIndex;
+        compiledResource.lastPassIndex = kInvalidPassIndex;
+        compiledResource.firstWriterPassIndex = kInvalidPassIndex;
+        compiledResource.lastWriterPassIndex = kInvalidPassIndex;
+
+        if (const auto imported = importedResources_.find(resourceName); imported != importedResources_.end())
+        {
+            compiledResource.kind = ResourceKind::Imported;
+            compiledResource.imported = true;
+            compiledResource.initialState = imported->second;
+        }
+        else if (const auto transient = transientResources_.find(resourceName); transient != transientResources_.end())
+        {
+            compiledResource.kind = ResourceKind::Transient;
+            compiledResource.initialState = transient->second;
+        }
+
+        compiledResource.exported = exportedResources_.contains(resourceName);
+
+        const std::size_t resourceIndex = result.resources.size();
+        resourceSummaryIndices.emplace(resourceName, resourceIndex);
+        result.resources.push_back(std::move(compiledResource));
+        return result.resources.back();
+    };
+
+    for (const auto& [resourceName, initialState] : importedResources_)
+    {
+        (void)initialState;
+        dependencyResources[resourceName].available = true;
+        ensureCompiledResource(resourceName);
+    }
+
+    for (const auto& [resourceName, initialState] : transientResources_)
+    {
+        dependencyResources[resourceName].available = initialState != ResourceState::Unknown;
+        ensureCompiledResource(resourceName);
+    }
+
+    for (const std::string& exportedResource : exportedResources_)
+    {
+        ensureCompiledResource(exportedResource).exported = true;
     }
 
     auto addDependency = [&](const std::uint32_t fromPassIndex,
@@ -208,7 +359,8 @@ RenderGraph::CompileResult RenderGraph::Compile() const
                 throw std::invalid_argument("RenderGraph pass cannot declare the same resource more than once.");
             }
 
-            ResourceState& resourceState = resourceStates[resource.resourceName];
+            ensureCompiledResource(resource.resourceName);
+            DependencyResourceState& resourceState = dependencyResources[resource.resourceName];
             if ((resource.access == ResourceAccess::Read || resource.access == ResourceAccess::ReadWrite)
                 && !resourceState.available)
             {
@@ -218,24 +370,12 @@ RenderGraph::CompileResult RenderGraph::Compile() const
                 throw std::invalid_argument(error.str());
             }
 
+            lastAccessPassByResource[resource.resourceName] = passIndex;
+
             if (resource.access == ResourceAccess::Read)
             {
                 addDependency(resourceState.lastWriterPassIndex, passIndex, resource.resourceName);
                 resourceState.readerPassIndices.push_back(passIndex);
-                continue;
-            }
-
-            if (resource.access == ResourceAccess::Write)
-            {
-                addDependency(resourceState.lastWriterPassIndex, passIndex, resource.resourceName);
-                for (const std::uint32_t readerPassIndex : resourceState.readerPassIndices)
-                {
-                    addDependency(readerPassIndex, passIndex, resource.resourceName);
-                }
-                resourceState.available = true;
-                resourceState.lastWriterPassIndex = passIndex;
-                lastWriterPassByResource[resource.resourceName] = passIndex;
-                resourceState.readerPassIndices.clear();
                 continue;
             }
 
@@ -244,6 +384,7 @@ RenderGraph::CompileResult RenderGraph::Compile() const
             {
                 addDependency(readerPassIndex, passIndex, resource.resourceName);
             }
+
             resourceState.available = true;
             resourceState.lastWriterPassIndex = passIndex;
             lastWriterPassByResource[resource.resourceName] = passIndex;
@@ -257,15 +398,15 @@ RenderGraph::CompileResult RenderGraph::Compile() const
         std::vector<std::uint32_t> passStack;
         for (const std::string& exportedResource : exportedResources_)
         {
-            const auto lastWriter = lastWriterPassByResource.find(exportedResource);
-            if (lastWriter == lastWriterPassByResource.end())
+            const auto lastAccess = lastAccessPassByResource.find(exportedResource);
+            if (lastAccess == lastAccessPassByResource.end())
             {
                 std::ostringstream error;
-                error << "RenderGraph exported resource '" << exportedResource << "' is never written.";
+                error << "RenderGraph exported resource '" << exportedResource << "' is never used.";
                 throw std::invalid_argument(error.str());
             }
 
-            passStack.push_back(lastWriter->second);
+            passStack.push_back(lastAccess->second);
         }
 
         while (!passStack.empty())
@@ -295,11 +436,8 @@ RenderGraph::CompileResult RenderGraph::Compile() const
         }
     }
 
-    std::vector<std::uint32_t> pendingDependencyCounts;
-    std::vector<std::vector<std::uint32_t>> dependentPassIndices;
-    pendingDependencyCounts.resize(result.passes.size());
-    dependentPassIndices.resize(result.passes.size());
-
+    std::vector<std::uint32_t> pendingDependencyCounts(result.passes.size(), 0);
+    std::vector<std::vector<std::uint32_t>> dependentPassIndices(result.passes.size());
     for (std::uint32_t passIndex = 0; passIndex < result.passes.size(); ++passIndex)
     {
         if (!requiredPasses[passIndex])
@@ -352,30 +490,105 @@ RenderGraph::CompileResult RenderGraph::Compile() const
         }
     }
 
+    std::unordered_map<std::string, ResourceState> currentStates;
+    for (const CompileResult::CompiledResource& resource : result.resources)
+    {
+        currentStates.emplace(resource.name, resource.initialState);
+    }
+
+    for (const std::uint32_t passIndex : result.executionPassIndices)
+    {
+        CompiledPass& compiledPass = result.passes[passIndex];
+        for (const ResourceUsage& resourceUsage : compiledPass.resources)
+        {
+            CompileResult::CompiledResource& compiledResource =
+                result.resources[resourceSummaryIndices.at(resourceUsage.resourceName)];
+            const ResourceState beforeState = currentStates[resourceUsage.resourceName];
+            const ResourceState desiredState = ResolveDesiredState(resourceUsage, beforeState);
+
+            if (compiledResource.firstPassIndex == kInvalidPassIndex)
+            {
+                compiledResource.firstPassIndex = passIndex;
+                compiledResource.firstUsageState = desiredState;
+            }
+
+            compiledResource.lastPassIndex = passIndex;
+            compiledResource.lastUsageState = desiredState;
+
+            if (resourceUsage.access != ResourceAccess::Read)
+            {
+                if (compiledResource.firstWriterPassIndex == kInvalidPassIndex)
+                {
+                    compiledResource.firstWriterPassIndex = passIndex;
+                }
+
+                compiledResource.lastWriterPassIndex = passIndex;
+            }
+
+            if (beforeState != ResourceState::Unknown
+                && desiredState != ResourceState::Unknown
+                && beforeState != desiredState)
+            {
+                compiledPass.transitions.push_back(CompiledPass::ResourceTransition {
+                    .resourceName = resourceUsage.resourceName,
+                    .beforeState = beforeState,
+                    .afterState = desiredState,
+                });
+            }
+
+            if (desiredState != ResourceState::Unknown)
+            {
+                currentStates[resourceUsage.resourceName] = desiredState;
+            }
+        }
+    }
+
+    std::sort(
+        result.resources.begin(),
+        result.resources.end(),
+        [](const CompileResult::CompiledResource& left, const CompileResult::CompiledResource& right)
+        {
+            return left.name < right.name;
+        });
+
     return result;
 }
 
 std::string RenderGraph::Describe() const
 {
-    const CompileResult compileResult = Compile();
+    return Describe(Compile());
+}
 
+std::string RenderGraph::Describe(const CompileResult& compileResult) const
+{
     std::ostringstream description;
     description << "RenderGraph:\n";
 
-    if (!importedResources_.empty())
+    const auto importedNames = GetSortedKeys(importedResources_);
+    if (!importedNames.empty())
     {
-        description << "  Imported:";
-        for (const std::string& resourceName : importedResources_)
+        description << "  Imported:\n";
+        for (const std::string& resourceName : importedNames)
         {
-            description << ' ' << resourceName;
+            description << "    " << resourceName << " (" << ToString(importedResources_.at(resourceName)) << ")\n";
         }
-        description << '\n';
     }
 
-    if (!exportedResources_.empty())
+    const auto transientNames = GetSortedKeys(transientResources_);
+    if (!transientNames.empty())
+    {
+        description << "  Transient:\n";
+        for (const std::string& resourceName : transientNames)
+        {
+            description << "    " << resourceName << " (" << ToString(transientResources_.at(resourceName)) << ")\n";
+        }
+    }
+
+    const auto exportedNames = GetSortedKeys(exportedResources_);
+    if (!exportedNames.empty())
     {
         description << "  Exported:";
-        for (const std::string& resourceName : exportedResources_)
+        for (const std::string& resourceName : exportedNames)
         {
             description << ' ' << resourceName;
         }
@@ -398,7 +611,21 @@ std::string RenderGraph::Describe() const
             description << "      resources:";
             for (const ResourceUsage& resource : pass.resources)
             {
-                description << ' ' << resource.resourceName << '(' << ToString(resource.access) << ')';
+                description << ' ' << resource.resourceName
+                            << '(' << ToString(resource.access)
+                            << ", " << ToString(resource.desiredState) << ')';
+            }
+            description << '\n';
+        }
+
+        if (!pass.transitions.empty())
+        {
+            description << "      transitions:";
+            for (const CompiledPass::ResourceTransition& transition : pass.transitions)
+            {
+                description << ' ' << transition.resourceName
+                            << '(' << ToString(transition.beforeState)
+                            << "->" << ToString(transition.afterState) << ')';
             }
             description << '\n';
         }
@@ -416,6 +643,49 @@ std::string RenderGraph::Describe() const
             }
         }
         description << '\n';
+    }
+
+    if (!compileResult.resources.empty())
+    {
+        description << "  Resources:\n";
+        for (const CompileResult::CompiledResource& resource : compileResult.resources)
+        {
+            description << "    " << resource.name
+                        << " [kind=" << ToString(resource.kind);
+            if (resource.exported)
+            {
+                description << ", exported";
+            }
+            description << "]\n";
+
+            description << "      states: initial=" << ToString(resource.initialState)
+                        << " first=" << ToString(resource.firstUsageState)
+                        << " last=" << ToString(resource.lastUsageState) << '\n';
+
+            description << "      lifetime:";
+            if (resource.firstPassIndex == kInvalidPassIndex)
+            {
+                description << " external-only";
+            }
+            else
+            {
+                description << " first=" << compileResult.passes[resource.firstPassIndex].name
+                            << " last=" << compileResult.passes[resource.lastPassIndex].name;
+            }
+            description << '\n';
+
+            description << "      writers:";
+            if (resource.firstWriterPassIndex == kInvalidPassIndex)
+            {
+                description << " none";
+            }
+            else
+            {
+                description << " first=" << compileResult.passes[resource.firstWriterPassIndex].name
+                            << " last=" << compileResult.passes[resource.lastWriterPassIndex].name;
+            }
+            description << '\n';
+        }
     }
 
     if (!compileResult.edges.empty())
@@ -470,6 +740,11 @@ bool RenderGraph::Empty() const noexcept
 bool RenderGraph::IsImportedResource(const std::string_view resourceName) const
 {
     return importedResources_.contains(std::string(resourceName));
+}
+
+bool RenderGraph::IsTransientResource(const std::string_view resourceName) const
+{
+    return transientResources_.contains(std::string(resourceName));
 }
 
 bool RenderGraph::IsExportedResource(const std::string_view resourceName) const

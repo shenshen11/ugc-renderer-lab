@@ -20,8 +20,11 @@
 #include <cstddef>
 #include <filesystem>
 #include <limits>
+#include <sstream>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include <DirectXMath.h>
 
@@ -104,15 +107,33 @@ std::uint32_t GetPipelineStateIndex(const MaterialDesc& material)
     return static_cast<std::uint32_t>(
         doubleSided ? PipelineStateKind::OpaqueDoubleSided : PipelineStateKind::OpaqueCullBack);
 }
+
+D3D12_RESOURCE_STATES ToD3D12ResourceState(const RenderGraph::ResourceState state)
+{
+    switch (state)
+    {
+    case RenderGraph::ResourceState::ShaderRead:
+        return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    case RenderGraph::ResourceState::RenderTarget:
+        return D3D12_RESOURCE_STATE_RENDER_TARGET;
+    case RenderGraph::ResourceState::DepthWrite:
+        return D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    case RenderGraph::ResourceState::Present:
+        return D3D12_RESOURCE_STATE_PRESENT;
+    case RenderGraph::ResourceState::Unknown:
+        break;
+    }
+
+    return D3D12_RESOURCE_STATE_COMMON;
+}
 } // namespace
 
 struct D3D12Renderer::FrameRenderContext
 {
     D3D12_CPU_DESCRIPTOR_HANDLE shadowDsvHandle = {};
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE sceneColorRtvHandle = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtvHandle = {};
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
-    D3D12_RESOURCE_BARRIER shadowMapToDepthWrite = {};
-    D3D12_RESOURCE_BARRIER toRenderTarget = {};
     D3D12_VIEWPORT shadowViewport = {};
     D3D12_RECT shadowScissorRect = {};
     std::array<float, 4> clearColor = {0.07f, 0.12f, 0.18f, 1.0f};
@@ -133,6 +154,7 @@ D3D12Renderer::D3D12Renderer(Window& window)
     CreateRenderTargets();
     CreateDepthStencil();
     CreateShadowMap();
+    CreateSceneColor();
     CreateFence();
     CreatePipeline();
     LoadSceneAsset();
@@ -210,18 +232,9 @@ void D3D12Renderer::Render()
         });
 
     frameContext.shadowDsvHandle = shadowDsvAllocation_.GetCpuHandle();
-    frameContext.rtvHandle = rtvAllocation_->GetCpuHandle(frameIndex_);
+    frameContext.sceneColorRtvHandle = sceneColorRtvAllocation_.GetCpuHandle();
+    frameContext.backBufferRtvHandle = rtvAllocation_->GetCpuHandle(frameIndex_);
     frameContext.dsvHandle = dsvAllocation_->GetCpuHandle();
-    frameContext.shadowMapToDepthWrite.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    frameContext.shadowMapToDepthWrite.Transition.pResource = shadowMap_.Get();
-    frameContext.shadowMapToDepthWrite.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    frameContext.shadowMapToDepthWrite.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    frameContext.shadowMapToDepthWrite.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    frameContext.toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    frameContext.toRenderTarget.Transition.pResource = renderTargets_[frameIndex_].Get();
-    frameContext.toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    frameContext.toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    frameContext.toRenderTarget.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     frameContext.shadowViewport.TopLeftX = 0.0f;
     frameContext.shadowViewport.TopLeftY = 0.0f;
     frameContext.shadowViewport.Width = static_cast<float>(kShadowMapSize);
@@ -234,12 +247,96 @@ void D3D12Renderer::Render()
     frameContext.shadowScissorRect.bottom = static_cast<LONG>(kShadowMapSize);
 
     RenderGraph frameGraph = BuildFrameRenderGraph(frameContext);
+    const RenderGraph::CompileResult compiledGraph = frameGraph.Compile();
     if (!renderGraphLogged_)
     {
-        Logger::Info(frameGraph.Describe());
+        Logger::Info(frameGraph.Describe(compiledGraph));
         renderGraphLogged_ = true;
     }
-    frameGraph.Execute();
+
+    const auto& registeredPasses = frameGraph.GetPasses();
+    auto resolveGraphResource = [&](const std::string_view resourceName) -> ID3D12Resource*
+    {
+        if (resourceName == "BackBuffer")
+        {
+            return renderTargets_[frameIndex_].Get();
+        }
+        if (resourceName == "SceneDepth")
+        {
+            return depthStencil_.Get();
+        }
+        if (resourceName == "ShadowMap")
+        {
+            return shadowMap_.Get();
+        }
+        if (resourceName == "SceneColor")
+        {
+            return sceneColor_.Get();
+        }
+
+        return nullptr;
+    };
+
+    auto applyTransitions = [&](const std::vector<RenderGraph::CompiledPass::ResourceTransition>& transitions)
+    {
+        std::vector<D3D12_RESOURCE_BARRIER> barriers;
+        barriers.reserve(transitions.size());
+        for (const RenderGraph::CompiledPass::ResourceTransition& transition : transitions)
+        {
+            ID3D12Resource* resource = resolveGraphResource(transition.resourceName);
+            if (resource == nullptr)
+            {
+                std::ostringstream error;
+                error << "No D3D12 resource mapping found for RenderGraph resource '"
+                      << transition.resourceName << "'.";
+                throw std::runtime_error(error.str());
+            }
+
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            barrier.Transition.pResource = resource;
+            barrier.Transition.StateBefore = ToD3D12ResourceState(transition.beforeState);
+            barrier.Transition.StateAfter = ToD3D12ResourceState(transition.afterState);
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            barriers.push_back(barrier);
+        }
+
+        if (!barriers.empty())
+        {
+            commandList_->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        }
+    };
+
+    std::vector<double> passCpuTimesMs;
+    passCpuTimesMs.reserve(compiledGraph.executionPassIndices.size());
+    for (const std::uint32_t passIndex : compiledGraph.executionPassIndices)
+    {
+        const RenderGraph::CompiledPass& compiledPass = compiledGraph.passes[passIndex];
+        applyTransitions(compiledPass.transitions);
+
+        const auto passStart = std::chrono::steady_clock::now();
+        registeredPasses[compiledPass.sourcePassIndex].execute();
+        const auto passEnd = std::chrono::steady_clock::now();
+        passCpuTimesMs.push_back(std::chrono::duration<double, std::milli>(passEnd - passStart).count());
+    }
+
+    if (!renderGraphProfilingLogged_)
+    {
+        double totalCpuTimeMs = 0.0;
+        std::ostringstream timings;
+        timings << "RenderGraph CPU pass timings (first frame):";
+        for (std::size_t timingIndex = 0; timingIndex < compiledGraph.executionPassIndices.size(); ++timingIndex)
+        {
+            const std::uint32_t passIndex = compiledGraph.executionPassIndices[timingIndex];
+            totalCpuTimeMs += passCpuTimesMs[timingIndex];
+            timings << "\n  " << compiledGraph.passes[passIndex].name
+                    << ": " << passCpuTimesMs[timingIndex] << " ms";
+        }
+        timings << "\n  Total: " << totalCpuTimeMs << " ms";
+        Logger::Info(timings.str());
+        renderGraphProfilingLogged_ = true;
+    }
 
     ThrowIfFailed(commandList_->Close(), "ID3D12GraphicsCommandList::Close");
 
@@ -253,25 +350,35 @@ void D3D12Renderer::Render()
 RenderGraph D3D12Renderer::BuildFrameRenderGraph(FrameRenderContext& context)
 {
     RenderGraph frameGraph;
-    frameGraph.ImportResource("EnvironmentTexture");
+    frameGraph.ImportResource("EnvironmentTexture", RenderGraph::ResourceState::ShaderRead);
+    frameGraph.ImportResource("ShadowMap", RenderGraph::ResourceState::ShaderRead);
+    frameGraph.ImportResource("SceneDepth", RenderGraph::ResourceState::DepthWrite);
+    frameGraph.ImportResource("BackBuffer", RenderGraph::ResourceState::Present);
+    frameGraph.DeclareTransientResource("SceneColor", RenderGraph::ResourceState::ShaderRead);
     frameGraph.ExportResource("BackBuffer");
     frameGraph.AddPass(
         "ShadowDepth",
-        {RenderGraph::Write("ShadowMap")},
+        {RenderGraph::Write("ShadowMap", RenderGraph::ResourceState::DepthWrite)},
         [this, &context]()
         {
             RecordShadowDepthPass(context);
         });
     frameGraph.AddPass(
         "MainColorBegin",
-        {RenderGraph::Write("BackBuffer"), RenderGraph::Write("SceneDepth")},
+        {
+            RenderGraph::Write("SceneColor", RenderGraph::ResourceState::RenderTarget),
+            RenderGraph::Write("SceneDepth", RenderGraph::ResourceState::DepthWrite),
+        },
         [this, &context]()
         {
             RecordMainColorBeginPass(context);
         });
     frameGraph.AddPass(
         "Skybox",
-        {RenderGraph::Read("EnvironmentTexture"), RenderGraph::Write("BackBuffer")},
+        {
+            RenderGraph::Read("EnvironmentTexture", RenderGraph::ResourceState::ShaderRead),
+            RenderGraph::Write("SceneColor", RenderGraph::ResourceState::RenderTarget),
+        },
         [this]()
         {
             RecordSkyboxPass();
@@ -279,10 +386,10 @@ RenderGraph D3D12Renderer::BuildFrameRenderGraph(FrameRenderContext& context)
     frameGraph.AddPass(
         "OpaqueGeometry",
         {
-            RenderGraph::Read("ShadowMap"),
-            RenderGraph::Read("EnvironmentTexture"),
-            RenderGraph::Write("BackBuffer"),
-            RenderGraph::ReadWrite("SceneDepth"),
+            RenderGraph::Read("ShadowMap", RenderGraph::ResourceState::ShaderRead),
+            RenderGraph::Read("EnvironmentTexture", RenderGraph::ResourceState::ShaderRead),
+            RenderGraph::Write("SceneColor", RenderGraph::ResourceState::RenderTarget),
+            RenderGraph::ReadWrite("SceneDepth", RenderGraph::ResourceState::DepthWrite),
         },
         [this, &context]()
         {
@@ -291,18 +398,28 @@ RenderGraph D3D12Renderer::BuildFrameRenderGraph(FrameRenderContext& context)
     frameGraph.AddPass(
         "TransparentGeometry",
         {
-            RenderGraph::Read("ShadowMap"),
-            RenderGraph::Read("EnvironmentTexture"),
-            RenderGraph::Read("SceneDepth"),
-            RenderGraph::ReadWrite("BackBuffer"),
+            RenderGraph::Read("ShadowMap", RenderGraph::ResourceState::ShaderRead),
+            RenderGraph::Read("EnvironmentTexture", RenderGraph::ResourceState::ShaderRead),
+            RenderGraph::Read("SceneDepth", RenderGraph::ResourceState::DepthWrite),
+            RenderGraph::ReadWrite("SceneColor", RenderGraph::ResourceState::RenderTarget),
         },
         [this, &context]()
         {
             RecordTransparentGeometryPass(context);
         });
     frameGraph.AddPass(
+        "PostProcess",
+        {
+            RenderGraph::Read("SceneColor", RenderGraph::ResourceState::ShaderRead),
+            RenderGraph::Write("BackBuffer", RenderGraph::ResourceState::RenderTarget),
+        },
+        [this, &context]()
+        {
+            RecordPostProcessPass(context);
+        });
+    frameGraph.AddPass(
         "PresentTransition",
-        {RenderGraph::ReadWrite("BackBuffer")},
+        {RenderGraph::Read("BackBuffer", RenderGraph::ResourceState::Present)},
         [this, &context]()
         {
             RecordPresentTransitionPass(context);
@@ -313,7 +430,6 @@ RenderGraph D3D12Renderer::BuildFrameRenderGraph(FrameRenderContext& context)
 void D3D12Renderer::RecordShadowDepthPass(const FrameRenderContext& context)
 {
     BindCommonGraphicsState();
-    commandList_->ResourceBarrier(1, &context.shadowMapToDepthWrite);
     commandList_->RSSetViewports(1, &context.shadowViewport);
     commandList_->RSSetScissorRects(1, &context.shadowScissorRect);
     commandList_->OMSetRenderTargets(0, nullptr, FALSE, &context.shadowDsvHandle);
@@ -338,20 +454,14 @@ void D3D12Renderer::RecordShadowDepthPass(const FrameRenderContext& context)
         commandList_->IASetIndexBuffer(&indexBufferView);
         commandList_->DrawIndexedInstanced(renderItem.mesh->GetIndexCount(), 1, 0, 0, 0);
     }
-
-    D3D12_RESOURCE_BARRIER shadowMapToShaderResource = context.shadowMapToDepthWrite;
-    shadowMapToShaderResource.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    shadowMapToShaderResource.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    commandList_->ResourceBarrier(1, &shadowMapToShaderResource);
 }
 
 void D3D12Renderer::RecordMainColorBeginPass(const FrameRenderContext& context)
 {
-    commandList_->ResourceBarrier(1, &context.toRenderTarget);
     commandList_->RSSetViewports(1, &viewport_);
     commandList_->RSSetScissorRects(1, &scissorRect_);
-    commandList_->OMSetRenderTargets(1, &context.rtvHandle, FALSE, &context.dsvHandle);
-    commandList_->ClearRenderTargetView(context.rtvHandle, context.clearColor.data(), 0, nullptr);
+    commandList_->OMSetRenderTargets(1, &context.sceneColorRtvHandle, FALSE, &context.dsvHandle);
+    commandList_->ClearRenderTargetView(context.sceneColorRtvHandle, context.clearColor.data(), 0, nullptr);
     commandList_->ClearDepthStencilView(context.dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     BindCommonGraphicsState();
 }
@@ -385,12 +495,21 @@ void D3D12Renderer::RecordTransparentGeometryPass(FrameRenderContext& context)
     }
 }
 
+void D3D12Renderer::RecordPostProcessPass(const FrameRenderContext& context)
+{
+    commandList_->RSSetViewports(1, &viewport_);
+    commandList_->RSSetScissorRects(1, &scissorRect_);
+    commandList_->OMSetRenderTargets(1, &context.backBufferRtvHandle, FALSE, nullptr);
+    BindCommonGraphicsState();
+    commandList_->SetPipelineState(postProcessPipelineState_.Get());
+    commandList_->SetGraphicsRootDescriptorTable(0, sceneCbvAllocation_.GetGpuHandle());
+    commandList_->SetGraphicsRootDescriptorTable(8, sceneColorSrvAllocation_.GetGpuHandle());
+    commandList_->DrawInstanced(3, 1, 0, 0);
+}
+
 void D3D12Renderer::RecordPresentTransitionPass(const FrameRenderContext& context)
 {
-    D3D12_RESOURCE_BARRIER toPresent = context.toRenderTarget;
-    toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    commandList_->ResourceBarrier(1, &toPresent);
+    (void)context;
 }
 
 void D3D12Renderer::BindCommonGraphicsState()
@@ -471,6 +590,7 @@ void D3D12Renderer::Resize(const std::uint32_t width, const std::uint32_t height
         renderTarget.Reset();
     }
     depthStencil_.Reset();
+    sceneColor_.Reset();
 
     DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
     ThrowIfFailed(swapChain_->GetDesc(&swapChainDesc), "IDXGISwapChain::GetDesc");
@@ -487,6 +607,7 @@ void D3D12Renderer::Resize(const std::uint32_t width, const std::uint32_t height
     frameFenceValues_.fill(fence_->GetCompletedValue());
     CreateRenderTargets();
     CreateDepthStencil();
+    CreateSceneColor();
     UpdateViewport(width, height);
 }
 
@@ -620,8 +741,9 @@ void D3D12Renderer::CreateSwapChain()
 void D3D12Renderer::CreateDescriptorHeap()
 {
     rtvAllocator_ = std::make_unique<DescriptorAllocator>();
-    rtvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kFrameCount, false);
+    rtvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kFrameCount + 1, false);
     rtvAllocation_ = std::make_unique<DescriptorAllocation>(rtvAllocator_->Allocate(kFrameCount));
+    sceneColorRtvAllocation_ = rtvAllocator_->Allocate(1);
 
     dsvAllocator_ = std::make_unique<DescriptorAllocator>();
     dsvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 2, false);
@@ -629,6 +751,7 @@ void D3D12Renderer::CreateDescriptorHeap()
 
     cbvAllocator_ = std::make_unique<DescriptorAllocator>();
     cbvAllocator_->Initialize(*device_.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 128, true);
+    sceneColorSrvAllocation_ = cbvAllocator_->Allocate(1);
 }
 
 void D3D12Renderer::CreateSceneConstants()
@@ -759,6 +882,66 @@ void D3D12Renderer::CreateShadowMap()
     device_->CreateShaderResourceView(shadowMap_.Get(), &shaderResourceViewDesc, shadowSrvAllocation_.GetCpuHandle());
 }
 
+void D3D12Renderer::CreateSceneColor()
+{
+    const std::uint32_t width = std::max(window_.GetClientWidth(), 1u);
+    const std::uint32_t height = std::max(window_.GetClientHeight(), 1u);
+
+    D3D12_HEAP_PROPERTIES heapProperties = {};
+    heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heapProperties.CreationNodeMask = 1;
+    heapProperties.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resourceDesc.Alignment = 0;
+    resourceDesc.Width = width;
+    resourceDesc.Height = height;
+    resourceDesc.DepthOrArraySize = 1;
+    resourceDesc.MipLevels = 1;
+    resourceDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.SampleDesc.Quality = 0;
+    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    clearValue.Color[0] = 0.07f;
+    clearValue.Color[1] = 0.12f;
+    clearValue.Color[2] = 0.18f;
+    clearValue.Color[3] = 1.0f;
+
+    ThrowIfFailed(
+        device_->CreateCommittedResource(
+            &heapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &resourceDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clearValue,
+            IID_PPV_ARGS(&sceneColor_)),
+        "ID3D12Device::CreateCommittedResource(scene color)");
+
+    D3D12_RENDER_TARGET_VIEW_DESC renderTargetViewDesc = {};
+    renderTargetViewDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    renderTargetViewDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    renderTargetViewDesc.Texture2D.MipSlice = 0;
+    renderTargetViewDesc.Texture2D.PlaneSlice = 0;
+    device_->CreateRenderTargetView(sceneColor_.Get(), &renderTargetViewDesc, sceneColorRtvAllocation_.GetCpuHandle());
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC shaderResourceViewDesc = {};
+    shaderResourceViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    shaderResourceViewDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    shaderResourceViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    shaderResourceViewDesc.Texture2D.MostDetailedMip = 0;
+    shaderResourceViewDesc.Texture2D.MipLevels = 1;
+    shaderResourceViewDesc.Texture2D.PlaneSlice = 0;
+    shaderResourceViewDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    device_->CreateShaderResourceView(sceneColor_.Get(), &shaderResourceViewDesc, sceneColorSrvAllocation_.GetCpuHandle());
+}
+
 void D3D12Renderer::CreateFence()
 {
     ThrowIfFailed(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "ID3D12Device::CreateFence");
@@ -783,6 +966,9 @@ void D3D12Renderer::CreatePipeline()
     const auto shadowShaderPath = ShaderCompiler::ResolveShaderPath(L"shadow_depth.hlsl");
     const auto shadowVertexShader = ShaderCompiler::CompileFromFile(shadowShaderPath, "VSMain", "vs_5_0");
     const auto shadowPixelShader = ShaderCompiler::CompileFromFile(shadowShaderPath, "PSMain", "ps_5_0");
+    const auto postProcessShaderPath = ShaderCompiler::ResolveShaderPath(L"post_process.hlsl");
+    const auto postProcessVertexShader = ShaderCompiler::CompileFromFile(postProcessShaderPath, "VSMain", "vs_5_0");
+    const auto postProcessPixelShader = ShaderCompiler::CompileFromFile(postProcessShaderPath, "PSMain", "ps_5_0");
 
     D3D12_DESCRIPTOR_RANGE objectCbvDescriptorRange = {};
     objectCbvDescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
@@ -1052,6 +1238,28 @@ void D3D12Renderer::CreatePipeline()
     ThrowIfFailed(
         device_->CreateGraphicsPipelineState(&shadowPipelineStateDesc, IID_PPV_ARGS(&shadowPipelineState_)),
         "ID3D12Device::CreateGraphicsPipelineState(shadow)");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC postProcessPipelineStateDesc = {};
+    postProcessPipelineStateDesc.pRootSignature = rootSignature_.Get();
+    postProcessPipelineStateDesc.VS = {postProcessVertexShader->GetBufferPointer(), postProcessVertexShader->GetBufferSize()};
+    postProcessPipelineStateDesc.PS = {postProcessPixelShader->GetBufferPointer(), postProcessPixelShader->GetBufferSize()};
+    postProcessPipelineStateDesc.BlendState = createBlendState(false);
+    postProcessPipelineStateDesc.SampleMask = UINT_MAX;
+    postProcessPipelineStateDesc.RasterizerState = createRasterizerState(true);
+    postProcessPipelineStateDesc.DepthStencilState.DepthEnable = FALSE;
+    postProcessPipelineStateDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    postProcessPipelineStateDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    postProcessPipelineStateDesc.DepthStencilState.StencilEnable = FALSE;
+    postProcessPipelineStateDesc.InputLayout = {nullptr, 0};
+    postProcessPipelineStateDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    postProcessPipelineStateDesc.NumRenderTargets = 1;
+    postProcessPipelineStateDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    postProcessPipelineStateDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    postProcessPipelineStateDesc.SampleDesc.Count = 1;
+
+    ThrowIfFailed(
+        device_->CreateGraphicsPipelineState(&postProcessPipelineStateDesc, IID_PPV_ARGS(&postProcessPipelineState_)),
+        "ID3D12Device::CreateGraphicsPipelineState(post process)");
 }
 
 void D3D12Renderer::LoadSceneAsset()

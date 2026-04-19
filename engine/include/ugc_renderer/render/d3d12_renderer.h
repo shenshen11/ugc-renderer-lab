@@ -62,6 +62,7 @@ private:
     void CreateRenderTargets();
     void CreateDepthStencil();
     void CreateShadowMap();
+    void CreateSceneColor();
     void CreateFence();
     void CreatePipeline();
     void LoadSceneAsset();
@@ -83,6 +84,7 @@ private:
     void RecordSkyboxPass();
     void RecordOpaqueGeometryPass(FrameRenderContext& context);
     void RecordTransparentGeometryPass(FrameRenderContext& context);
+    void RecordPostProcessPass(const FrameRenderContext& context);
     void RecordPresentTransitionPass(const FrameRenderContext& context);
     void BindCommonGraphicsState();
     void DrawRenderItem(RenderItem& renderItem, std::uint32_t& currentPipelineStateIndex);
@@ -107,11 +109,13 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, kFrameCount> renderTargets_;
     Microsoft::WRL::ComPtr<ID3D12Resource> depthStencil_;
     Microsoft::WRL::ComPtr<ID3D12Resource> shadowMap_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> sceneColor_;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kPipelineStateCount> pipelineStates_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> skyboxPipelineState_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> shadowPipelineState_;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> postProcessPipelineState_;
     std::unique_ptr<DescriptorAllocator> rtvAllocator_;
     std::unique_ptr<DescriptorAllocator> dsvAllocator_;
     std::unique_ptr<DescriptorAllocator> cbvAllocator_;
@@ -119,6 +123,8 @@ private:
     std::unique_ptr<DescriptorAllocation> dsvAllocation_;
     DescriptorAllocation shadowDsvAllocation_ = {};
     DescriptorAllocation shadowSrvAllocation_ = {};
+    DescriptorAllocation sceneColorRtvAllocation_ = {};
+    DescriptorAllocation sceneColorSrvAllocation_ = {};
     std::unique_ptr<ConstantBuffer> sceneConstantBuffer_;
     DescriptorAllocation sceneCbvAllocation_ = {};
     std::unique_ptr<TextureManager> textureManager_;
@@ -138,6 +144,7 @@ private:
     float cameraOrbitPitch_ = 0.0f;
     float cameraDistance_ = 3.0f;
     bool renderGraphLogged_ = false;
+    bool renderGraphProfilingLogged_ = false;
 
     std::array<std::uint64_t, kFrameCount> frameFenceValues_ = {};
     std::uint64_t nextFenceValue_ = 1;
