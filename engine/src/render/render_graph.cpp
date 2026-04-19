@@ -44,9 +44,20 @@ void RenderGraph::ImportResource(std::string resourceName)
     importedResources_.insert(std::move(resourceName));
 }
 
+void RenderGraph::ExportResource(std::string resourceName)
+{
+    if (resourceName.empty())
+    {
+        throw std::invalid_argument("RenderGraph exported resource requires a non-empty resource name.");
+    }
+
+    exportedResources_.insert(std::move(resourceName));
+}
+
 void RenderGraph::Reset()
 {
     importedResources_.clear();
+    exportedResources_.clear();
     passes_.clear();
 }
 
@@ -117,6 +128,7 @@ RenderGraph::CompileResult RenderGraph::Compile() const
 
     std::unordered_set<std::string> passNames;
     std::unordered_map<std::string, ResourceState> resourceStates;
+    std::unordered_map<std::string, std::uint32_t> lastWriterPassByResource;
 
     for (const std::string& importedResource : importedResources_)
     {
@@ -204,6 +216,7 @@ RenderGraph::CompileResult RenderGraph::Compile() const
                 }
                 resourceState.available = true;
                 resourceState.lastWriterPassIndex = passIndex;
+                lastWriterPassByResource[resource.resourceName] = passIndex;
                 resourceState.readerPassIndices.clear();
                 continue;
             }
@@ -215,7 +228,52 @@ RenderGraph::CompileResult RenderGraph::Compile() const
             }
             resourceState.available = true;
             resourceState.lastWriterPassIndex = passIndex;
+            lastWriterPassByResource[resource.resourceName] = passIndex;
             resourceState.readerPassIndices.clear();
+        }
+    }
+
+    std::vector<bool> requiredPasses(result.passes.size(), exportedResources_.empty());
+    if (!exportedResources_.empty())
+    {
+        std::vector<std::uint32_t> passStack;
+        for (const std::string& exportedResource : exportedResources_)
+        {
+            const auto lastWriter = lastWriterPassByResource.find(exportedResource);
+            if (lastWriter == lastWriterPassByResource.end())
+            {
+                std::ostringstream error;
+                error << "RenderGraph exported resource '" << exportedResource << "' is never written.";
+                throw std::invalid_argument(error.str());
+            }
+
+            passStack.push_back(lastWriter->second);
+        }
+
+        while (!passStack.empty())
+        {
+            const std::uint32_t passIndex = passStack.back();
+            passStack.pop_back();
+
+            if (requiredPasses[passIndex])
+            {
+                continue;
+            }
+
+            requiredPasses[passIndex] = true;
+            for (const std::uint32_t dependencyPassIndex : result.passes[passIndex].dependencyPassIndices)
+            {
+                passStack.push_back(dependencyPassIndex);
+            }
+        }
+    }
+
+    for (std::uint32_t passIndex = 0; passIndex < result.passes.size(); ++passIndex)
+    {
+        if (!requiredPasses[passIndex])
+        {
+            result.passes[passIndex].culled = true;
+            result.culledPassIndices.push_back(passIndex);
         }
     }
 
@@ -226,23 +284,35 @@ RenderGraph::CompileResult RenderGraph::Compile() const
 
     for (std::uint32_t passIndex = 0; passIndex < result.passes.size(); ++passIndex)
     {
+        if (!requiredPasses[passIndex])
+        {
+            continue;
+        }
+
         pendingDependencyCounts[passIndex] =
             static_cast<std::uint32_t>(result.passes[passIndex].dependencyPassIndices.size());
         for (const std::uint32_t dependencyPassIndex : result.passes[passIndex].dependencyPassIndices)
         {
+            if (!requiredPasses[dependencyPassIndex])
+            {
+                continue;
+            }
+
             dependentPassIndices[dependencyPassIndex].push_back(passIndex);
         }
     }
 
     std::vector<bool> emittedPasses(result.passes.size(), false);
     result.executionPassIndices.reserve(result.passes.size());
+    const std::size_t requiredPassCount = static_cast<std::size_t>(
+        std::count(requiredPasses.begin(), requiredPasses.end(), true));
 
-    while (result.executionPassIndices.size() < result.passes.size())
+    while (result.executionPassIndices.size() < requiredPassCount)
     {
         bool emittedPass = false;
         for (std::uint32_t passIndex = 0; passIndex < result.passes.size(); ++passIndex)
         {
-            if (emittedPasses[passIndex] || pendingDependencyCounts[passIndex] != 0)
+            if (!requiredPasses[passIndex] || emittedPasses[passIndex] || pendingDependencyCounts[passIndex] != 0)
             {
                 continue;
             }
@@ -285,5 +355,10 @@ bool RenderGraph::Empty() const noexcept
 bool RenderGraph::IsImportedResource(const std::string_view resourceName) const
 {
     return importedResources_.contains(std::string(resourceName));
+}
+
+bool RenderGraph::IsExportedResource(const std::string_view resourceName) const
+{
+    return exportedResources_.contains(std::string(resourceName));
 }
 } // namespace ugc_renderer

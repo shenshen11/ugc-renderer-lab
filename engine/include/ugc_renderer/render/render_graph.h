@@ -45,6 +45,7 @@ public:
     struct CompiledPass
     {
         std::uint32_t sourcePassIndex = 0;
+        bool culled = false;
         std::string name;
         std::vector<ResourceUsage> resources;
         std::vector<std::uint32_t> dependencyPassIndices;
@@ -55,6 +56,7 @@ public:
         std::vector<CompiledPass> passes;
         std::vector<DependencyEdge> edges;
         std::vector<std::uint32_t> executionPassIndices;
+        std::vector<std::uint32_t> culledPassIndices;
     };
 
     [[nodiscard]] static ResourceUsage Read(std::string resourceName);
@@ -62,6 +64,7 @@ public:
     [[nodiscard]] static ResourceUsage ReadWrite(std::string resourceName);
 
     void ImportResource(std::string resourceName);
+    void ExportResource(std::string resourceName);
     void Reset();
     void AddPass(std::string name, ExecuteCallback execute);
     void AddPass(std::string name, std::initializer_list<ResourceUsage> resources, ExecuteCallback execute);
@@ -72,9 +75,11 @@ public:
     [[nodiscard]] const std::vector<Pass>& GetPasses() const noexcept;
     [[nodiscard]] bool Empty() const noexcept;
     [[nodiscard]] bool IsImportedResource(std::string_view resourceName) const;
+    [[nodiscard]] bool IsExportedResource(std::string_view resourceName) const;
 
 private:
     std::unordered_set<std::string> importedResources_;
+    std::unordered_set<std::string> exportedResources_;
     std::vector<Pass> passes_;
 };
 } // namespace ugc_renderer
