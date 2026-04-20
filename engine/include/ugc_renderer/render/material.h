@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <string>
 
 #include <DirectXMath.h>
 
@@ -39,5 +40,12 @@ struct MaterialDesc
     MaterialTextureSlots textures = {};
     MaterialAlphaMode alphaMode = MaterialAlphaMode::Opaque;
     bool doubleSided = false;
+};
+
+struct RuntimeMaterialInfo
+{
+    std::uint32_t runtimeIndex = 0;
+    std::string name;
+    MaterialDesc desc = {};
 };
 } // namespace ugc_renderer

@@ -2,14 +2,17 @@ set(UGC_RENDERER_ENGINE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(UGC_RENDERER_ENGINE_SOURCES
     ${UGC_RENDERER_ENGINE_ROOT}/src/app/application.cpp
+    ${UGC_RENDERER_ENGINE_ROOT}/src/app/runtime_render_settings_persistence.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/asset/gltf_loader.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/asset/gltf_mesh_builder.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/asset/gltf_scene_builder.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/asset/json_parser.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/core/logger.cpp
+    ${UGC_RENDERER_ENGINE_ROOT}/src/platform/runtime_control_panel.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/platform/window.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/constant_buffer.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/descriptor_allocator.cpp
+    ${UGC_RENDERER_ENGINE_ROOT}/src/render/gpu_debug_marker.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/gpu_buffer.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/image_loader.cpp
     ${UGC_RENDERER_ENGINE_ROOT}/src/render/material_manager.cpp
@@ -45,6 +48,7 @@ target_link_libraries(
         d3dcompiler
         dxgi
         dxguid
+        comctl32
         user32
         gdi32
         windowscodecs

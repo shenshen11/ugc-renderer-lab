@@ -1,13 +1,16 @@
 #pragma once
 
-#include <initializer_list>
+#include <array>
 #include <cstdint>
 #include <functional>
-#include <string_view>
+#include <initializer_list>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include <dxgiformat.h>
 
 namespace ugc_renderer
 {
@@ -39,6 +42,58 @@ public:
         ReadWrite,
     };
 
+    enum class ResourceDimension
+    {
+        Unknown,
+        Texture2D,
+    };
+
+    enum class ResourceBindFlags : std::uint32_t
+    {
+        None = 0,
+        ShaderRead = 1u << 0u,
+        RenderTarget = 1u << 1u,
+        DepthStencil = 1u << 2u,
+    };
+
+    enum class PassType
+    {
+        Generic,
+        Graphics,
+        Fullscreen,
+        Present,
+    };
+
+    struct ResourceDesc
+    {
+        ResourceDimension dimension = ResourceDimension::Unknown;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        DXGI_FORMAT shaderReadFormat = DXGI_FORMAT_UNKNOWN;
+        DXGI_FORMAT renderTargetFormat = DXGI_FORMAT_UNKNOWN;
+        DXGI_FORMAT depthStencilFormat = DXGI_FORMAT_UNKNOWN;
+        ResourceBindFlags bindFlags = ResourceBindFlags::None;
+        bool hasClearValue = false;
+        std::array<float, 4> clearColor = {0.0f, 0.0f, 0.0f, 1.0f};
+        float clearDepth = 1.0f;
+        std::uint8_t clearStencil = 0;
+
+        [[nodiscard]] static ResourceDesc Texture2D(
+            std::uint32_t width,
+            std::uint32_t height,
+            DXGI_FORMAT format);
+
+        ResourceDesc& AllowShaderRead();
+        ResourceDesc& AllowRenderTarget(std::array<float, 4> clearColor);
+        ResourceDesc& AllowDepthStencil(float clearDepth = 1.0f, std::uint8_t clearStencil = 0);
+        ResourceDesc& SetShaderReadFormat(DXGI_FORMAT shaderReadFormatValue);
+        ResourceDesc& SetRenderTargetFormat(DXGI_FORMAT renderTargetFormatValue);
+        ResourceDesc& SetDepthStencilFormat(DXGI_FORMAT depthStencilFormatValue);
+
+        [[nodiscard]] bool operator==(const ResourceDesc& other) const noexcept;
+    };
+
     struct ResourceUsage
     {
         std::string resourceName;
@@ -46,9 +101,22 @@ public:
         ResourceState desiredState = ResourceState::Unknown;
     };
 
+    struct PassMetadata
+    {
+        PassType type = PassType::Generic;
+        bool allowCulling = true;
+        bool enableCpuTiming = true;
+        std::string debugLabel;
+
+        [[nodiscard]] static PassMetadata Graphics(std::string debugLabel);
+        [[nodiscard]] static PassMetadata Fullscreen(std::string debugLabel);
+        [[nodiscard]] static PassMetadata Present(std::string debugLabel);
+    };
+
     struct Pass
     {
         std::string name;
+        PassMetadata metadata;
         std::vector<ResourceUsage> resources;
         ExecuteCallback execute;
     };
@@ -72,6 +140,7 @@ public:
         std::uint32_t sourcePassIndex = 0;
         bool culled = false;
         std::string name;
+        PassMetadata metadata;
         std::vector<ResourceUsage> resources;
         std::vector<ResourceTransition> transitions;
         std::vector<std::uint32_t> dependencyPassIndices;
@@ -83,6 +152,7 @@ public:
         {
             std::string name;
             ResourceKind kind = ResourceKind::Internal;
+            ResourceDesc desc = {};
             bool imported = false;
             bool exported = false;
             ResourceState initialState = ResourceState::Unknown;
@@ -92,10 +162,22 @@ public:
             std::uint32_t lastPassIndex = 0;
             std::uint32_t firstWriterPassIndex = 0;
             std::uint32_t lastWriterPassIndex = 0;
+            std::uint32_t physicalResourceIndex = 0;
+        };
+
+        struct PhysicalResource
+        {
+            std::uint32_t physicalResourceIndex = 0;
+            ResourceDesc desc = {};
+            ResourceState initialState = ResourceState::Unknown;
+            std::uint32_t firstPassIndex = 0;
+            std::uint32_t lastPassIndex = 0;
+            std::vector<std::string> aliasedLogicalResources;
         };
 
         std::vector<CompiledPass> passes;
         std::vector<CompiledResource> resources;
+        std::vector<PhysicalResource> physicalResources;
         std::vector<DependencyEdge> edges;
         std::vector<std::uint32_t> executionPassIndices;
         std::vector<std::uint32_t> culledPassIndices;
@@ -112,15 +194,31 @@ public:
         ResourceState desiredState = ResourceState::Unknown);
 
     void ImportResource(std::string resourceName, ResourceState initialState = ResourceState::Unknown);
+    void ImportResource(
+        std::string resourceName,
+        const ResourceDesc& resourceDesc,
+        ResourceState initialState = ResourceState::Unknown);
     void DeclareTransientResource(std::string resourceName, ResourceState initialState = ResourceState::Unknown);
+    void DeclareTransientResource(
+        std::string resourceName,
+        const ResourceDesc& resourceDesc,
+        ResourceState initialState = ResourceState::Unknown);
     void ExportResource(std::string resourceName);
     void Reset();
     void AddPass(std::string name, ExecuteCallback execute);
+    void AddPass(std::string name, PassMetadata metadata, ExecuteCallback execute);
     void AddPass(std::string name, std::initializer_list<ResourceUsage> resources, ExecuteCallback execute);
+    void AddPass(
+        std::string name,
+        std::initializer_list<ResourceUsage> resources,
+        PassMetadata metadata,
+        ExecuteCallback execute);
     void Execute() const;
     [[nodiscard]] CompileResult Compile() const;
     [[nodiscard]] std::string Describe() const;
     [[nodiscard]] std::string Describe(const CompileResult& compileResult) const;
+    [[nodiscard]] std::string DescribeGraphviz() const;
+    [[nodiscard]] std::string DescribeGraphviz(const CompileResult& compileResult) const;
     void Validate() const;
 
     [[nodiscard]] const std::vector<Pass>& GetPasses() const noexcept;
@@ -129,10 +227,32 @@ public:
     [[nodiscard]] bool IsTransientResource(std::string_view resourceName) const;
     [[nodiscard]] bool IsExportedResource(std::string_view resourceName) const;
 
+    struct ResourceDeclaration
+    {
+        ResourceDesc desc = {};
+        ResourceState initialState = ResourceState::Unknown;
+    };
+
 private:
-    std::unordered_map<std::string, ResourceState> importedResources_;
-    std::unordered_map<std::string, ResourceState> transientResources_;
+    std::unordered_map<std::string, ResourceDeclaration> importedResources_;
+    std::unordered_map<std::string, ResourceDeclaration> transientResources_;
     std::unordered_set<std::string> exportedResources_;
     std::vector<Pass> passes_;
 };
+
+[[nodiscard]] constexpr RenderGraph::ResourceBindFlags operator|(
+    const RenderGraph::ResourceBindFlags left,
+    const RenderGraph::ResourceBindFlags right) noexcept
+{
+    return static_cast<RenderGraph::ResourceBindFlags>(
+        static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right));
+}
+
+constexpr RenderGraph::ResourceBindFlags& operator|=(
+    RenderGraph::ResourceBindFlags& left,
+    const RenderGraph::ResourceBindFlags right) noexcept
+{
+    left = left | right;
+    return left;
+}
 } // namespace ugc_renderer

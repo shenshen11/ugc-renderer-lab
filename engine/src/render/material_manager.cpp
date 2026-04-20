@@ -4,6 +4,7 @@
 
 #include <span>
 #include <stdexcept>
+#include <string>
 
 namespace ugc_renderer
 {
@@ -13,7 +14,7 @@ void MaterialManager::Initialize(ID3D12Device& device, DescriptorAllocator& cbvA
     cbvAllocator_ = &cbvAllocator;
 }
 
-std::uint32_t MaterialManager::CreateMaterial(const MaterialDesc& materialDesc)
+std::uint32_t MaterialManager::CreateMaterial(const MaterialDesc& materialDesc, const std::string_view name)
 {
     if (device_ == nullptr || cbvAllocator_ == nullptr)
     {
@@ -21,6 +22,7 @@ std::uint32_t MaterialManager::CreateMaterial(const MaterialDesc& materialDesc)
     }
 
     MaterialAsset materialAsset = {};
+    materialAsset.name = name.empty() ? "Material " + std::to_string(materials_.size()) : std::string(name);
     materialAsset.desc = materialDesc;
     materialAsset.constantBuffer = std::make_unique<ConstantBuffer>();
     materialAsset.constantBuffer->Initialize(*device_, sizeof(MaterialConstants));
@@ -35,6 +37,13 @@ std::uint32_t MaterialManager::CreateMaterial(const MaterialDesc& materialDesc)
     const std::uint32_t index = static_cast<std::uint32_t>(materials_.size());
     materials_.push_back(std::move(materialAsset));
     return index;
+}
+
+void MaterialManager::UpdateMaterial(const std::uint32_t index, const MaterialDesc& materialDesc)
+{
+    MaterialAsset& materialAsset = materials_.at(index);
+    materialAsset.desc = materialDesc;
+    materialAsset.constantBuffer->Update(std::as_bytes(std::span {&materialAsset.desc.constants, 1}));
 }
 
 MaterialAsset& MaterialManager::GetMaterial(const std::uint32_t index)

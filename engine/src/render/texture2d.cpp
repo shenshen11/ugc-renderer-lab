@@ -15,6 +15,10 @@ void Texture2D::Initialize(
     const DXGI_FORMAT format,
     const std::span<const std::byte> pixelData)
 {
+    width_ = width;
+    height_ = height;
+    format_ = format;
+
     D3D12_HEAP_PROPERTIES defaultHeapProperties = {};
     defaultHeapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
     defaultHeapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -123,6 +127,21 @@ void Texture2D::Initialize(
 ID3D12Resource* Texture2D::GetResource() const noexcept
 {
     return resource_.Get();
+}
+
+std::uint32_t Texture2D::GetWidth() const noexcept
+{
+    return width_;
+}
+
+std::uint32_t Texture2D::GetHeight() const noexcept
+{
+    return height_;
+}
+
+DXGI_FORMAT Texture2D::GetFormat() const noexcept
+{
+    return format_;
 }
 
 void Texture2D::ReleaseUploadResource() noexcept

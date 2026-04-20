@@ -18,6 +18,11 @@ DescriptorAllocation::DescriptorAllocation(
 {
 }
 
+bool DescriptorAllocation::IsValid() const noexcept
+{
+    return count_ != 0;
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE DescriptorAllocation::GetCpuHandle(const std::uint32_t offset) const
 {
     if (offset >= count_)

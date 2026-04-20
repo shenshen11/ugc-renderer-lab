@@ -53,6 +53,17 @@ std::uint32_t TextureManager::LoadFromFile(ID3D12GraphicsCommandList& commandLis
         normalizedPath);
 }
 
+std::uint32_t TextureManager::CreateFromMemory(
+    ID3D12GraphicsCommandList& commandList,
+    const std::span<const std::byte> pixelData,
+    const std::uint32_t width,
+    const std::uint32_t height,
+    const DXGI_FORMAT format,
+    const std::filesystem::path& sourcePath)
+{
+    return CreateTextureAsset(commandList, pixelData, width, height, format, sourcePath);
+}
+
 std::uint32_t TextureManager::CreateTextureAsset(
     ID3D12GraphicsCommandList& commandList,
     const std::span<const std::byte> pixelData,
@@ -125,6 +136,11 @@ std::uint32_t TextureManager::CreateSolidColorTexture(
 const DescriptorAllocation& TextureManager::GetSrvAllocation(const std::uint32_t index) const
 {
     return assets_.at(index).srvAllocation;
+}
+
+const TextureAsset& TextureManager::GetTextureAsset(const std::uint32_t index) const
+{
+    return assets_.at(index);
 }
 
 std::uint32_t TextureManager::GetDefaultTextureIndex(const DefaultTextureKind kind) const noexcept

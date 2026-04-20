@@ -8,6 +8,10 @@ cbuffer SceneConstants : register(b0)
     float4 cameraForward;
     float4x4 lightViewProjection;
     float4 shadowParams;
+    float4 bloomParams;
+    float4 iblParams;
+    float4 frameBufferParams;
+    float4 postProcessParams;
 }
 
 Texture2D environmentTexture : register(t5);
@@ -41,21 +45,6 @@ float3 SRGBToLinear(float3 value)
     return pow(saturate(value), 2.2f);
 }
 
-float3 LinearToSRGB(float3 value)
-{
-    return pow(saturate(value), 1.0f / 2.2f);
-}
-
-float3 ACESFilm(float3 value)
-{
-    const float a = 2.51f;
-    const float b = 0.03f;
-    const float c = 2.43f;
-    const float d = 0.59f;
-    const float e = 0.14f;
-    return saturate((value * (a * value + b)) / (value * (c * value + d) + e));
-}
-
 float2 DirectionToLatLongUv(float3 direction)
 {
     direction = normalize(direction);
@@ -66,6 +55,12 @@ float2 DirectionToLatLongUv(float3 direction)
 
 float4 PSMain(VSOutput input) : SV_TARGET
 {
+    int debugMode = (int)round(postProcessParams.x);
+    if (debugMode >= 5 && debugMode <= 7)
+    {
+        return float4(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+
     float3 viewDirection = normalize(
         cameraForward.xyz +
         input.ndc.x * cameraRightAndTanHalfFovX.xyz * cameraRightAndTanHalfFovX.w +
@@ -73,8 +68,6 @@ float4 PSMain(VSOutput input) : SV_TARGET
 
     float2 uv = DirectionToLatLongUv(viewDirection);
     float environmentIntensity = cameraPositionAndEnvironmentIntensity.w;
-    float exposure = directionalLightColorAndExposure.w;
     float3 color = SRGBToLinear(environmentTexture.Sample(materialSampler, uv).rgb) * environmentIntensity;
-    float3 mapped = ACESFilm(color * exposure);
-    return float4(LinearToSRGB(mapped), 1.0f);
+    return float4(color, 1.0f);
 }

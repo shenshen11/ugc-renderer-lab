@@ -8,6 +8,10 @@ cbuffer SceneConstants : register(b0)
     float4 cameraForward;
     float4x4 lightViewProjection;
     float4 shadowParams;
+    float4 bloomParams;
+    float4 iblParams;
+    float4 frameBufferParams;
+    float4 postProcessParams;
 }
 
 cbuffer ObjectConstants : register(b1)

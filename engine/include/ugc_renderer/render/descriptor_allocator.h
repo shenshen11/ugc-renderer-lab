@@ -20,6 +20,7 @@ public:
         std::uint32_t count,
         bool shaderVisible) noexcept;
 
+    [[nodiscard]] bool IsValid() const noexcept;
     D3D12_CPU_DESCRIPTOR_HANDLE GetCpuHandle(std::uint32_t offset = 0) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetGpuHandle(std::uint32_t offset = 0) const;
 

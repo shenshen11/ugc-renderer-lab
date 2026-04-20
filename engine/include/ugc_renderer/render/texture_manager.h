@@ -46,7 +46,15 @@ public:
 
     void CreateDefaultTextures(ID3D12GraphicsCommandList& commandList);
     std::uint32_t LoadFromFile(ID3D12GraphicsCommandList& commandList, const std::filesystem::path& path);
+    std::uint32_t CreateFromMemory(
+        ID3D12GraphicsCommandList& commandList,
+        std::span<const std::byte> pixelData,
+        std::uint32_t width,
+        std::uint32_t height,
+        DXGI_FORMAT format,
+        const std::filesystem::path& sourcePath);
     const DescriptorAllocation& GetSrvAllocation(std::uint32_t index) const;
+    const TextureAsset& GetTextureAsset(std::uint32_t index) const;
     std::uint32_t GetDefaultTextureIndex(DefaultTextureKind kind) const noexcept;
     std::uint32_t ResolveTextureIndex(std::uint32_t requestedIndex, DefaultTextureKind fallbackKind) const noexcept;
     void ReleaseUploadResources() noexcept;

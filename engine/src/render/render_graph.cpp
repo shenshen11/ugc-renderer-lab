@@ -13,6 +13,7 @@ namespace ugc_renderer
 namespace
 {
 constexpr std::uint32_t kInvalidPassIndex = std::numeric_limits<std::uint32_t>::max();
+constexpr std::uint32_t kInvalidPhysicalResourceIndex = std::numeric_limits<std::uint32_t>::max();
 
 const char* ToString(const RenderGraph::ResourceAccess access)
 {
@@ -63,6 +64,64 @@ const char* ToString(const RenderGraph::ResourceKind kind)
     return "Unknown";
 }
 
+const char* ToString(const RenderGraph::ResourceDimension dimension)
+{
+    switch (dimension)
+    {
+    case RenderGraph::ResourceDimension::Unknown:
+        return "Unknown";
+    case RenderGraph::ResourceDimension::Texture2D:
+        return "Texture2D";
+    }
+
+    return "Unknown";
+}
+
+const char* ToString(const RenderGraph::PassType type)
+{
+    switch (type)
+    {
+    case RenderGraph::PassType::Generic:
+        return "Generic";
+    case RenderGraph::PassType::Graphics:
+        return "Graphics";
+    case RenderGraph::PassType::Fullscreen:
+        return "Fullscreen";
+    case RenderGraph::PassType::Present:
+        return "Present";
+    }
+
+    return "Unknown";
+}
+
+const char* ToString(const DXGI_FORMAT format)
+{
+    switch (format)
+    {
+    case DXGI_FORMAT_UNKNOWN:
+        return "UNKNOWN";
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+        return "R8G8B8A8_UNORM";
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        return "R16G16B16A16_FLOAT";
+    case DXGI_FORMAT_D32_FLOAT:
+        return "D32_FLOAT";
+    case DXGI_FORMAT_R32_FLOAT:
+        return "R32_FLOAT";
+    case DXGI_FORMAT_R32_TYPELESS:
+        return "R32_TYPELESS";
+    default:
+        return "OTHER";
+    }
+}
+
+bool HasBindFlag(
+    const RenderGraph::ResourceBindFlags bindFlags,
+    const RenderGraph::ResourceBindFlags flag) noexcept
+{
+    return (static_cast<std::uint32_t>(bindFlags) & static_cast<std::uint32_t>(flag)) != 0;
+}
+
 RenderGraph::ResourceState ResolveDesiredState(
     const RenderGraph::ResourceUsage& usage,
     const RenderGraph::ResourceState fallbackState)
@@ -70,13 +129,14 @@ RenderGraph::ResourceState ResolveDesiredState(
     return usage.desiredState != RenderGraph::ResourceState::Unknown ? usage.desiredState : fallbackState;
 }
 
-std::vector<std::string> GetSortedKeys(const std::unordered_map<std::string, RenderGraph::ResourceState>& resources)
+std::vector<std::string> GetSortedKeys(
+    const std::unordered_map<std::string, RenderGraph::ResourceDeclaration>& resources)
 {
     std::vector<std::string> names;
     names.reserve(resources.size());
-    for (const auto& [resourceName, initialState] : resources)
+    for (const auto& [resourceName, declaration] : resources)
     {
-        (void)initialState;
+        (void)declaration;
         names.push_back(resourceName);
     }
 
@@ -90,7 +150,200 @@ std::vector<std::string> GetSortedKeys(const std::unordered_set<std::string>& re
     std::sort(names.begin(), names.end());
     return names;
 }
+
+std::string DescribeResourceDesc(const RenderGraph::ResourceDesc& resourceDesc)
+{
+    std::ostringstream description;
+    description << ToString(resourceDesc.dimension);
+
+    if (resourceDesc.dimension == RenderGraph::ResourceDimension::Texture2D)
+    {
+        description << " " << resourceDesc.width << "x" << resourceDesc.height
+                    << " fmt=" << ToString(resourceDesc.format);
+
+        if (resourceDesc.shaderReadFormat != DXGI_FORMAT_UNKNOWN && resourceDesc.shaderReadFormat != resourceDesc.format)
+        {
+            description << " srv=" << ToString(resourceDesc.shaderReadFormat);
+        }
+        if (resourceDesc.renderTargetFormat != DXGI_FORMAT_UNKNOWN
+            && resourceDesc.renderTargetFormat != resourceDesc.format)
+        {
+            description << " rtv=" << ToString(resourceDesc.renderTargetFormat);
+        }
+        if (resourceDesc.depthStencilFormat != DXGI_FORMAT_UNKNOWN
+            && resourceDesc.depthStencilFormat != resourceDesc.format)
+        {
+            description << " dsv=" << ToString(resourceDesc.depthStencilFormat);
+        }
+
+        description
+                    << " flags=";
+
+        bool emittedFlag = false;
+        if (HasBindFlag(resourceDesc.bindFlags, RenderGraph::ResourceBindFlags::ShaderRead))
+        {
+            description << "ShaderRead";
+            emittedFlag = true;
+        }
+        if (HasBindFlag(resourceDesc.bindFlags, RenderGraph::ResourceBindFlags::RenderTarget))
+        {
+            description << (emittedFlag ? "|" : "") << "RenderTarget";
+            emittedFlag = true;
+        }
+        if (HasBindFlag(resourceDesc.bindFlags, RenderGraph::ResourceBindFlags::DepthStencil))
+        {
+            description << (emittedFlag ? "|" : "") << "DepthStencil";
+            emittedFlag = true;
+        }
+        if (!emittedFlag)
+        {
+            description << "None";
+        }
+    }
+
+    return description.str();
+}
+
+std::string EscapeGraphvizLabel(const std::string_view text)
+{
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char character : text)
+    {
+        switch (character)
+        {
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        default:
+            escaped += character;
+            break;
+        }
+    }
+
+    return escaped;
+}
 } // namespace
+
+RenderGraph::ResourceDesc RenderGraph::ResourceDesc::Texture2D(
+    const std::uint32_t width,
+    const std::uint32_t height,
+    const DXGI_FORMAT format)
+{
+    ResourceDesc desc = {};
+    desc.dimension = ResourceDimension::Texture2D;
+    desc.width = width;
+    desc.height = height;
+    desc.format = format;
+    return desc;
+}
+
+RenderGraph::ResourceDesc& RenderGraph::ResourceDesc::AllowShaderRead()
+{
+    bindFlags |= ResourceBindFlags::ShaderRead;
+    if (shaderReadFormat == DXGI_FORMAT_UNKNOWN)
+    {
+        shaderReadFormat = format;
+    }
+    return *this;
+}
+
+RenderGraph::ResourceDesc& RenderGraph::ResourceDesc::AllowRenderTarget(const std::array<float, 4> clearColorValue)
+{
+    bindFlags |= ResourceBindFlags::RenderTarget;
+    if (renderTargetFormat == DXGI_FORMAT_UNKNOWN)
+    {
+        renderTargetFormat = format;
+    }
+    hasClearValue = true;
+    clearColor = clearColorValue;
+    return *this;
+}
+
+RenderGraph::ResourceDesc& RenderGraph::ResourceDesc::AllowDepthStencil(
+    const float clearDepthValue,
+    const std::uint8_t clearStencilValue)
+{
+    bindFlags |= ResourceBindFlags::DepthStencil;
+    if (depthStencilFormat == DXGI_FORMAT_UNKNOWN)
+    {
+        depthStencilFormat = format;
+    }
+    hasClearValue = true;
+    clearDepth = clearDepthValue;
+    clearStencil = clearStencilValue;
+    return *this;
+}
+
+RenderGraph::ResourceDesc& RenderGraph::ResourceDesc::SetShaderReadFormat(const DXGI_FORMAT shaderReadFormatValue)
+{
+    shaderReadFormat = shaderReadFormatValue;
+    return *this;
+}
+
+RenderGraph::ResourceDesc& RenderGraph::ResourceDesc::SetRenderTargetFormat(const DXGI_FORMAT renderTargetFormatValue)
+{
+    renderTargetFormat = renderTargetFormatValue;
+    return *this;
+}
+
+RenderGraph::ResourceDesc& RenderGraph::ResourceDesc::SetDepthStencilFormat(const DXGI_FORMAT depthStencilFormatValue)
+{
+    depthStencilFormat = depthStencilFormatValue;
+    return *this;
+}
+
+bool RenderGraph::ResourceDesc::operator==(const ResourceDesc& other) const noexcept
+{
+    return dimension == other.dimension
+        && width == other.width
+        && height == other.height
+        && format == other.format
+        && shaderReadFormat == other.shaderReadFormat
+        && renderTargetFormat == other.renderTargetFormat
+        && depthStencilFormat == other.depthStencilFormat
+        && bindFlags == other.bindFlags
+        && hasClearValue == other.hasClearValue
+        && clearColor == other.clearColor
+        && clearDepth == other.clearDepth
+        && clearStencil == other.clearStencil;
+}
+
+RenderGraph::PassMetadata RenderGraph::PassMetadata::Graphics(std::string debugLabelValue)
+{
+    return PassMetadata {
+        .type = PassType::Graphics,
+        .allowCulling = true,
+        .enableCpuTiming = true,
+        .debugLabel = std::move(debugLabelValue),
+    };
+}
+
+RenderGraph::PassMetadata RenderGraph::PassMetadata::Fullscreen(std::string debugLabelValue)
+{
+    return PassMetadata {
+        .type = PassType::Fullscreen,
+        .allowCulling = true,
+        .enableCpuTiming = true,
+        .debugLabel = std::move(debugLabelValue),
+    };
+}
+
+RenderGraph::PassMetadata RenderGraph::PassMetadata::Present(std::string debugLabelValue)
+{
+    return PassMetadata {
+        .type = PassType::Present,
+        .allowCulling = false,
+        .enableCpuTiming = false,
+        .debugLabel = std::move(debugLabelValue),
+    };
+}
 
 RenderGraph::ResourceUsage RenderGraph::Read(std::string resourceName, const ResourceState desiredState)
 {
@@ -121,6 +374,14 @@ RenderGraph::ResourceUsage RenderGraph::ReadWrite(std::string resourceName, cons
 
 void RenderGraph::ImportResource(std::string resourceName, const ResourceState initialState)
 {
+    ImportResource(std::move(resourceName), {}, initialState);
+}
+
+void RenderGraph::ImportResource(
+    std::string resourceName,
+    const ResourceDesc& resourceDesc,
+    const ResourceState initialState)
+{
     if (resourceName.empty())
     {
         throw std::invalid_argument("RenderGraph imported resource requires a non-empty resource name.");
@@ -131,17 +392,31 @@ void RenderGraph::ImportResource(std::string resourceName, const ResourceState i
         throw std::invalid_argument("RenderGraph resource cannot be both imported and transient.");
     }
 
-    const auto [iterator, inserted] = importedResources_.emplace(std::move(resourceName), initialState);
+    const auto [iterator, inserted] = importedResources_.emplace(
+        std::move(resourceName),
+        ResourceDeclaration {
+            .desc = resourceDesc,
+            .initialState = initialState,
+        });
     if (!inserted)
     {
-        if (iterator->second != initialState)
+        if (iterator->second.initialState != initialState || !(iterator->second.desc == resourceDesc))
         {
-            throw std::invalid_argument("RenderGraph imported resource is declared multiple times with different states.");
+            throw std::invalid_argument(
+                "RenderGraph imported resource is declared multiple times with different descriptors or states.");
         }
     }
 }
 
 void RenderGraph::DeclareTransientResource(std::string resourceName, const ResourceState initialState)
+{
+    DeclareTransientResource(std::move(resourceName), {}, initialState);
+}
+
+void RenderGraph::DeclareTransientResource(
+    std::string resourceName,
+    const ResourceDesc& resourceDesc,
+    const ResourceState initialState)
 {
     if (resourceName.empty())
     {
@@ -153,12 +428,18 @@ void RenderGraph::DeclareTransientResource(std::string resourceName, const Resou
         throw std::invalid_argument("RenderGraph resource cannot be both transient and imported.");
     }
 
-    const auto [iterator, inserted] = transientResources_.emplace(std::move(resourceName), initialState);
+    const auto [iterator, inserted] = transientResources_.emplace(
+        std::move(resourceName),
+        ResourceDeclaration {
+            .desc = resourceDesc,
+            .initialState = initialState,
+        });
     if (!inserted)
     {
-        if (iterator->second != initialState)
+        if (iterator->second.initialState != initialState || !(iterator->second.desc == resourceDesc))
         {
-            throw std::invalid_argument("RenderGraph transient resource is declared multiple times with different states.");
+            throw std::invalid_argument(
+                "RenderGraph transient resource is declared multiple times with different descriptors or states.");
         }
     }
 }
@@ -183,19 +464,33 @@ void RenderGraph::Reset()
 
 void RenderGraph::AddPass(std::string name, ExecuteCallback execute)
 {
+    AddPass(std::move(name), {}, PassMetadata {}, std::move(execute));
+}
+
+void RenderGraph::AddPass(std::string name, PassMetadata metadata, ExecuteCallback execute)
+{
+    AddPass(std::move(name), {}, std::move(metadata), std::move(execute));
+}
+
+void RenderGraph::AddPass(std::string name, std::initializer_list<ResourceUsage> resources, ExecuteCallback execute)
+{
+    AddPass(std::move(name), resources, PassMetadata {}, std::move(execute));
+}
+
+void RenderGraph::AddPass(
+    std::string name,
+    std::initializer_list<ResourceUsage> resources,
+    PassMetadata metadata,
+    ExecuteCallback execute)
+{
     if (!execute)
     {
         throw std::invalid_argument("RenderGraph pass requires a valid execute callback.");
     }
 
-    AddPass(std::move(name), {}, std::move(execute));
-}
-
-void RenderGraph::AddPass(std::string name, std::initializer_list<ResourceUsage> resources, ExecuteCallback execute)
-{
-    if (!execute)
+    if (name.empty())
     {
-        throw std::invalid_argument("RenderGraph pass requires a valid execute callback.");
+        throw std::invalid_argument("RenderGraph pass requires a non-empty name.");
     }
 
     for (const ResourceUsage& resource : resources)
@@ -208,6 +503,7 @@ void RenderGraph::AddPass(std::string name, std::initializer_list<ResourceUsage>
 
     passes_.push_back(Pass {
         .name = std::move(name),
+        .metadata = std::move(metadata),
         .resources = resources,
         .execute = std::move(execute),
     });
@@ -238,7 +534,9 @@ RenderGraph::CompileResult RenderGraph::Compile() const
     {
         result.passes.push_back(CompiledPass {
             .sourcePassIndex = static_cast<std::uint32_t>(result.passes.size()),
+            .culled = false,
             .name = pass.name,
+            .metadata = pass.metadata,
             .resources = pass.resources,
             .transitions = {},
             .dependencyPassIndices = {},
@@ -265,17 +563,20 @@ RenderGraph::CompileResult RenderGraph::Compile() const
         compiledResource.lastPassIndex = kInvalidPassIndex;
         compiledResource.firstWriterPassIndex = kInvalidPassIndex;
         compiledResource.lastWriterPassIndex = kInvalidPassIndex;
+        compiledResource.physicalResourceIndex = kInvalidPhysicalResourceIndex;
 
         if (const auto imported = importedResources_.find(resourceName); imported != importedResources_.end())
         {
             compiledResource.kind = ResourceKind::Imported;
+            compiledResource.desc = imported->second.desc;
             compiledResource.imported = true;
-            compiledResource.initialState = imported->second;
+            compiledResource.initialState = imported->second.initialState;
         }
         else if (const auto transient = transientResources_.find(resourceName); transient != transientResources_.end())
         {
             compiledResource.kind = ResourceKind::Transient;
-            compiledResource.initialState = transient->second;
+            compiledResource.desc = transient->second.desc;
+            compiledResource.initialState = transient->second.initialState;
         }
 
         compiledResource.exported = exportedResources_.contains(resourceName);
@@ -286,16 +587,16 @@ RenderGraph::CompileResult RenderGraph::Compile() const
         return result.resources.back();
     };
 
-    for (const auto& [resourceName, initialState] : importedResources_)
+    for (const auto& [resourceName, declaration] : importedResources_)
     {
-        (void)initialState;
         dependencyResources[resourceName].available = true;
         ensureCompiledResource(resourceName);
+        (void)declaration;
     }
 
-    for (const auto& [resourceName, initialState] : transientResources_)
+    for (const auto& [resourceName, declaration] : transientResources_)
     {
-        dependencyResources[resourceName].available = initialState != ResourceState::Unknown;
+        dependencyResources[resourceName].available = declaration.initialState != ResourceState::Unknown;
         ensureCompiledResource(resourceName);
     }
 
@@ -341,10 +642,6 @@ RenderGraph::CompileResult RenderGraph::Compile() const
     for (std::uint32_t passIndex = 0; passIndex < passes_.size(); ++passIndex)
     {
         const Pass& pass = passes_[passIndex];
-        if (pass.name.empty())
-        {
-            throw std::invalid_argument("RenderGraph pass requires a non-empty name.");
-        }
 
         if (!passNames.insert(pass.name).second)
         {
@@ -429,10 +726,14 @@ RenderGraph::CompileResult RenderGraph::Compile() const
 
     for (std::uint32_t passIndex = 0; passIndex < result.passes.size(); ++passIndex)
     {
-        if (!requiredPasses[passIndex])
+        if (!requiredPasses[passIndex] && result.passes[passIndex].metadata.allowCulling)
         {
             result.passes[passIndex].culled = true;
             result.culledPassIndices.push_back(passIndex);
+        }
+        else if (!result.passes[passIndex].metadata.allowCulling)
+        {
+            requiredPasses[passIndex] = true;
         }
     }
 
@@ -445,8 +746,6 @@ RenderGraph::CompileResult RenderGraph::Compile() const
             continue;
         }
 
-        pendingDependencyCounts[passIndex] =
-            static_cast<std::uint32_t>(result.passes[passIndex].dependencyPassIndices.size());
         for (const std::uint32_t dependencyPassIndex : result.passes[passIndex].dependencyPassIndices)
         {
             if (!requiredPasses[dependencyPassIndex])
@@ -454,12 +753,12 @@ RenderGraph::CompileResult RenderGraph::Compile() const
                 continue;
             }
 
+            ++pendingDependencyCounts[passIndex];
             dependentPassIndices[dependencyPassIndex].push_back(passIndex);
         }
     }
 
     std::vector<bool> emittedPasses(result.passes.size(), false);
-    result.executionPassIndices.reserve(result.passes.size());
     const std::size_t requiredPassCount = static_cast<std::size_t>(
         std::count(requiredPasses.begin(), requiredPasses.end(), true));
 
@@ -543,6 +842,93 @@ RenderGraph::CompileResult RenderGraph::Compile() const
         }
     }
 
+    struct TransientLifetime
+    {
+        std::size_t resourceIndex = 0;
+        std::uint32_t firstPassIndex = kInvalidPassIndex;
+    };
+
+    std::vector<TransientLifetime> transientLifetimes;
+    transientLifetimes.reserve(result.resources.size());
+    for (std::size_t resourceIndex = 0; resourceIndex < result.resources.size(); ++resourceIndex)
+    {
+        const CompileResult::CompiledResource& compiledResource = result.resources[resourceIndex];
+        if (compiledResource.kind != ResourceKind::Transient || compiledResource.firstPassIndex == kInvalidPassIndex)
+        {
+            continue;
+        }
+
+        transientLifetimes.push_back(TransientLifetime {
+            .resourceIndex = resourceIndex,
+            .firstPassIndex = compiledResource.firstPassIndex,
+        });
+    }
+
+    std::sort(
+        transientLifetimes.begin(),
+        transientLifetimes.end(),
+        [&](const TransientLifetime& left, const TransientLifetime& right)
+        {
+            const auto& leftResource = result.resources[left.resourceIndex];
+            const auto& rightResource = result.resources[right.resourceIndex];
+            if (left.firstPassIndex != right.firstPassIndex)
+            {
+                return left.firstPassIndex < right.firstPassIndex;
+            }
+
+            return leftResource.name < rightResource.name;
+        });
+
+    struct PhysicalAllocationCandidate
+    {
+        std::uint32_t physicalResourceIndex = 0;
+        ResourceDesc desc = {};
+        std::uint32_t lastPassIndex = kInvalidPassIndex;
+    };
+
+    std::vector<PhysicalAllocationCandidate> physicalAllocationCandidates;
+    for (const TransientLifetime& transientLifetime : transientLifetimes)
+    {
+        CompileResult::CompiledResource& compiledResource = result.resources[transientLifetime.resourceIndex];
+        PhysicalAllocationCandidate* selectedCandidate = nullptr;
+        for (PhysicalAllocationCandidate& candidate : physicalAllocationCandidates)
+        {
+            if (candidate.lastPassIndex < compiledResource.firstPassIndex && candidate.desc == compiledResource.desc)
+            {
+                selectedCandidate = &candidate;
+                break;
+            }
+        }
+
+        if (selectedCandidate == nullptr)
+        {
+            const std::uint32_t physicalResourceIndex = static_cast<std::uint32_t>(result.physicalResources.size());
+            result.physicalResources.push_back(CompileResult::PhysicalResource {
+                .physicalResourceIndex = physicalResourceIndex,
+                .desc = compiledResource.desc,
+                .initialState = compiledResource.initialState,
+                .firstPassIndex = compiledResource.firstPassIndex,
+                .lastPassIndex = compiledResource.lastPassIndex,
+                .aliasedLogicalResources = {compiledResource.name},
+            });
+            physicalAllocationCandidates.push_back(PhysicalAllocationCandidate {
+                .physicalResourceIndex = physicalResourceIndex,
+                .desc = compiledResource.desc,
+                .lastPassIndex = compiledResource.lastPassIndex,
+            });
+            compiledResource.physicalResourceIndex = physicalResourceIndex;
+            continue;
+        }
+
+        CompileResult::PhysicalResource& physicalResource =
+            result.physicalResources[selectedCandidate->physicalResourceIndex];
+        physicalResource.firstPassIndex = std::min(physicalResource.firstPassIndex, compiledResource.firstPassIndex);
+        physicalResource.lastPassIndex = std::max(physicalResource.lastPassIndex, compiledResource.lastPassIndex);
+        physicalResource.aliasedLogicalResources.push_back(compiledResource.name);
+        selectedCandidate->lastPassIndex = compiledResource.lastPassIndex;
+        compiledResource.physicalResourceIndex = selectedCandidate->physicalResourceIndex;
+    }
+
     std::sort(
         result.resources.begin(),
         result.resources.end(),
@@ -550,6 +936,19 @@ RenderGraph::CompileResult RenderGraph::Compile() const
         {
             return left.name < right.name;
         });
+
+    std::sort(
+        result.physicalResources.begin(),
+        result.physicalResources.end(),
+        [](const CompileResult::PhysicalResource& left, const CompileResult::PhysicalResource& right)
+        {
+            return left.physicalResourceIndex < right.physicalResourceIndex;
+        });
+
+    for (CompileResult::PhysicalResource& physicalResource : result.physicalResources)
+    {
+        std::sort(physicalResource.aliasedLogicalResources.begin(), physicalResource.aliasedLogicalResources.end());
+    }
 
     return result;
 }
@@ -570,7 +969,13 @@ std::string RenderGraph::Describe(const CompileResult& compileResult) const
         description << "  Imported:\n";
         for (const std::string& resourceName : importedNames)
         {
-            description << "    " << resourceName << " (" << ToString(importedResources_.at(resourceName)) << ")\n";
+            const ResourceDeclaration& declaration = importedResources_.at(resourceName);
+            description << "    " << resourceName << " (" << ToString(declaration.initialState) << ")";
+            if (declaration.desc.dimension != ResourceDimension::Unknown)
+            {
+                description << " [" << DescribeResourceDesc(declaration.desc) << "]";
+            }
+            description << '\n';
         }
     }
 
@@ -580,7 +985,13 @@ std::string RenderGraph::Describe(const CompileResult& compileResult) const
         description << "  Transient:\n";
         for (const std::string& resourceName : transientNames)
         {
-            description << "    " << resourceName << " (" << ToString(transientResources_.at(resourceName)) << ")\n";
+            const ResourceDeclaration& declaration = transientResources_.at(resourceName);
+            description << "    " << resourceName << " (" << ToString(declaration.initialState) << ")";
+            if (declaration.desc.dimension != ResourceDimension::Unknown)
+            {
+                description << " [" << DescribeResourceDesc(declaration.desc) << "]";
+            }
+            description << '\n';
         }
     }
 
@@ -603,6 +1014,15 @@ std::string RenderGraph::Describe(const CompileResult& compileResult) const
         if (pass.culled)
         {
             description << " (culled)";
+        }
+        description << '\n';
+
+        description << "      meta: type=" << ToString(pass.metadata.type)
+                    << " cull=" << (pass.metadata.allowCulling ? "on" : "off")
+                    << " cpuTiming=" << (pass.metadata.enableCpuTiming ? "on" : "off");
+        if (!pass.metadata.debugLabel.empty())
+        {
+            description << " label=" << pass.metadata.debugLabel;
         }
         description << '\n';
 
@@ -658,6 +1078,7 @@ std::string RenderGraph::Describe(const CompileResult& compileResult) const
             }
             description << "]\n";
 
+            description << "      desc: " << DescribeResourceDesc(resource.desc) << '\n';
             description << "      states: initial=" << ToString(resource.initialState)
                         << " first=" << ToString(resource.firstUsageState)
                         << " last=" << ToString(resource.lastUsageState) << '\n';
@@ -685,6 +1106,38 @@ std::string RenderGraph::Describe(const CompileResult& compileResult) const
                             << " last=" << compileResult.passes[resource.lastWriterPassIndex].name;
             }
             description << '\n';
+
+            description << "      physical:";
+            if (resource.physicalResourceIndex == kInvalidPhysicalResourceIndex)
+            {
+                description << " n/a";
+            }
+            else
+            {
+                description << ' ' << resource.physicalResourceIndex;
+            }
+            description << '\n';
+        }
+    }
+
+    if (!compileResult.physicalResources.empty())
+    {
+        description << "  PhysicalResources:\n";
+        for (const CompileResult::PhysicalResource& physicalResource : compileResult.physicalResources)
+        {
+            description << "    [" << physicalResource.physicalResourceIndex << "] "
+                        << DescribeResourceDesc(physicalResource.desc) << '\n';
+
+            description << "      aliases:";
+            for (const std::string& logicalResourceName : physicalResource.aliasedLogicalResources)
+            {
+                description << ' ' << logicalResourceName;
+            }
+            description << '\n';
+
+            description << "      lifetime: first=" << compileResult.passes[physicalResource.firstPassIndex].name
+                        << " last=" << compileResult.passes[physicalResource.lastPassIndex].name << '\n';
+            description << "      initial: " << ToString(physicalResource.initialState) << '\n';
         }
     }
 
@@ -720,6 +1173,187 @@ std::string RenderGraph::Describe(const CompileResult& compileResult) const
     }
 
     return description.str();
+}
+
+std::string RenderGraph::DescribeGraphviz() const
+{
+    return DescribeGraphviz(Compile());
+}
+
+std::string RenderGraph::DescribeGraphviz(const CompileResult& compileResult) const
+{
+    std::ostringstream graphviz;
+    graphviz << "digraph RenderGraph {\n";
+    graphviz << "  rankdir=LR;\n";
+    graphviz << "  graph [fontname=\"Consolas\", labelloc=t, label=\"UGC Renderer Render Graph\"];\n";
+    graphviz << "  node [fontname=\"Consolas\"];\n";
+    graphviz << "  edge [fontname=\"Consolas\"];\n\n";
+
+    graphviz << "  subgraph cluster_passes {\n";
+    graphviz << "    label=\"Passes\";\n";
+    graphviz << "    color=\"#56697A\";\n";
+    graphviz << "    style=\"rounded\";\n";
+    for (std::size_t passIndex = 0; passIndex < compileResult.passes.size(); ++passIndex)
+    {
+        const CompiledPass& pass = compileResult.passes[passIndex];
+        std::string label = "[" + std::to_string(passIndex) + "] " + pass.name;
+        label += "\n";
+        label += ToString(pass.metadata.type);
+        if (!pass.metadata.debugLabel.empty() && pass.metadata.debugLabel != pass.name)
+        {
+            label += "\n";
+            label += pass.metadata.debugLabel;
+        }
+        if (pass.culled)
+        {
+            label += "\nculled";
+        }
+
+        const char* fillColor = "#D9DEE4";
+        switch (pass.metadata.type)
+        {
+        case PassType::Graphics:
+            fillColor = pass.culled ? "#D7DBE0" : "#BFD9FF";
+            break;
+        case PassType::Fullscreen:
+            fillColor = pass.culled ? "#DCD7E2" : "#D8C9FF";
+            break;
+        case PassType::Present:
+            fillColor = pass.culled ? "#D7E2D7" : "#BDE6C1";
+            break;
+        case PassType::Generic:
+            fillColor = pass.culled ? "#E0E0E0" : "#D9DEE4";
+            break;
+        }
+
+        graphviz << "    pass_" << passIndex
+                 << " [shape=box, style=\"rounded,filled\", fillcolor=\"" << fillColor
+                 << "\", label=\"" << EscapeGraphvizLabel(label) << "\"];\n";
+    }
+    graphviz << "  }\n\n";
+
+    graphviz << "  subgraph cluster_resources {\n";
+    graphviz << "    label=\"Logical Resources\";\n";
+    graphviz << "    color=\"#7A5B56\";\n";
+    graphviz << "    style=\"rounded\";\n";
+    for (std::size_t resourceIndex = 0; resourceIndex < compileResult.resources.size(); ++resourceIndex)
+    {
+        const CompileResult::CompiledResource& resource = compileResult.resources[resourceIndex];
+        std::string label = resource.name;
+        label += "\n";
+        label += ToString(resource.kind);
+        if (resource.exported)
+        {
+            label += "\nexported";
+        }
+        label += "\n";
+        label += DescribeResourceDesc(resource.desc);
+        label += "\n";
+        label += std::string("initial=") + ToString(resource.initialState);
+        label += "\n";
+        label += std::string("lifetime=") + std::to_string(resource.firstPassIndex) + "->"
+            + std::to_string(resource.lastPassIndex);
+
+        const char* fillColor = "#EFE7D7";
+        switch (resource.kind)
+        {
+        case ResourceKind::Imported:
+            fillColor = "#FFE8B8";
+            break;
+        case ResourceKind::Transient:
+            fillColor = "#FFD4C7";
+            break;
+        case ResourceKind::Internal:
+            fillColor = "#EFE7D7";
+            break;
+        }
+
+        graphviz << "    resource_" << resourceIndex
+                 << " [shape=ellipse, style=\"filled\", fillcolor=\"" << fillColor
+                 << "\", label=\"" << EscapeGraphvizLabel(label) << "\"];\n";
+    }
+    graphviz << "  }\n\n";
+
+    if (!compileResult.physicalResources.empty())
+    {
+        graphviz << "  subgraph cluster_physical {\n";
+        graphviz << "    label=\"Physical Resources\";\n";
+        graphviz << "    color=\"#5E5A84\";\n";
+        graphviz << "    style=\"rounded\";\n";
+        for (const CompileResult::PhysicalResource& physicalResource : compileResult.physicalResources)
+        {
+            std::string label = "[" + std::to_string(physicalResource.physicalResourceIndex) + "]";
+            label += "\n";
+            label += DescribeResourceDesc(physicalResource.desc);
+            label += "\n";
+            label += std::string("lifetime=") + std::to_string(physicalResource.firstPassIndex) + "->"
+                + std::to_string(physicalResource.lastPassIndex);
+
+            graphviz << "    physical_" << physicalResource.physicalResourceIndex
+                     << " [shape=cylinder, style=\"filled\", fillcolor=\"#DAD4FF\", label=\""
+                     << EscapeGraphvizLabel(label) << "\"];\n";
+        }
+        graphviz << "  }\n\n";
+    }
+
+    std::unordered_map<std::string, std::size_t> resourceIndices;
+    resourceIndices.reserve(compileResult.resources.size());
+    for (std::size_t resourceIndex = 0; resourceIndex < compileResult.resources.size(); ++resourceIndex)
+    {
+        resourceIndices.emplace(compileResult.resources[resourceIndex].name, resourceIndex);
+    }
+
+    for (std::size_t passIndex = 0; passIndex < compileResult.passes.size(); ++passIndex)
+    {
+        const CompiledPass& pass = compileResult.passes[passIndex];
+        for (const ResourceUsage& usage : pass.resources)
+        {
+            const auto resourceIndexIterator = resourceIndices.find(usage.resourceName);
+            if (resourceIndexIterator == resourceIndices.end())
+            {
+                continue;
+            }
+
+            const std::size_t resourceIndex = resourceIndexIterator->second;
+            std::string label = ToString(usage.access);
+            if (usage.desiredState != ResourceState::Unknown)
+            {
+                label += "\n";
+                label += ToString(usage.desiredState);
+            }
+
+            if (usage.access == ResourceAccess::Read)
+            {
+                graphviz << "  resource_" << resourceIndex << " -> pass_" << passIndex
+                         << " [color=\"#4F6D8A\", label=\"" << EscapeGraphvizLabel(label) << "\"];\n";
+            }
+            else if (usage.access == ResourceAccess::Write)
+            {
+                graphviz << "  pass_" << passIndex << " -> resource_" << resourceIndex
+                         << " [color=\"#9B4D3A\", label=\"" << EscapeGraphvizLabel(label) << "\"];\n";
+            }
+            else
+            {
+                graphviz << "  pass_" << passIndex << " -> resource_" << resourceIndex
+                         << " [color=\"#7E4D8A\", dir=both, label=\"" << EscapeGraphvizLabel(label) << "\"];\n";
+            }
+        }
+    }
+
+    for (std::size_t resourceIndex = 0; resourceIndex < compileResult.resources.size(); ++resourceIndex)
+    {
+        const CompileResult::CompiledResource& resource = compileResult.resources[resourceIndex];
+        if (resource.physicalResourceIndex == kInvalidPhysicalResourceIndex)
+        {
+            continue;
+        }
+
+        graphviz << "  resource_" << resourceIndex << " -> physical_" << resource.physicalResourceIndex
+                 << " [style=dashed, arrowhead=none, color=\"#8A62CC\", label=\"alias\"];\n";
+    }
+
+    graphviz << "}\n";
+    return graphviz.str();
 }
 
 void RenderGraph::Validate() const

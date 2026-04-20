@@ -29,9 +29,15 @@ public:
         std::span<const std::byte> pixelData);
 
     ID3D12Resource* GetResource() const noexcept;
+    [[nodiscard]] std::uint32_t GetWidth() const noexcept;
+    [[nodiscard]] std::uint32_t GetHeight() const noexcept;
+    [[nodiscard]] DXGI_FORMAT GetFormat() const noexcept;
     void ReleaseUploadResource() noexcept;
 
 private:
+    std::uint32_t width_ = 0;
+    std::uint32_t height_ = 0;
+    DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
     Microsoft::WRL::ComPtr<ID3D12Resource> resource_;
     Microsoft::WRL::ComPtr<ID3D12Resource> uploadResource_;
 };

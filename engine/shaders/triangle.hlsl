@@ -8,6 +8,10 @@ cbuffer SceneConstants : register(b0)
     float4 cameraForward;
     float4x4 lightViewProjection;
     float4 shadowParams;
+    float4 bloomParams;
+    float4 iblParams;
+    float4 frameBufferParams;
+    float4 postProcessParams;
 }
 
 cbuffer ObjectConstants : register(b1)
@@ -31,7 +35,9 @@ Texture2D metallicRoughnessTexture : register(t2);
 Texture2D occlusionTexture : register(t3);
 Texture2D emissiveTexture : register(t4);
 Texture2D environmentTexture : register(t5);
-Texture2D shadowMap : register(t6);
+Texture2D iblDiffuseTexture : register(t6);
+Texture2D iblSpecularTexture : register(t7);
+Texture2D shadowMap : register(t8);
 SamplerState materialSampler : register(s0);
 SamplerState shadowSampler : register(s1);
 
@@ -81,11 +87,6 @@ float3 SRGBToLinear(float3 value)
     return pow(saturate(value), 2.2f);
 }
 
-float3 LinearToSRGB(float3 value)
-{
-    return pow(saturate(value), 1.0f / 2.2f);
-}
-
 float DistributionGGX(float3 normal, float3 halfVector, float roughness)
 {
     float alpha = roughness * roughness;
@@ -120,16 +121,6 @@ float3 FresnelSchlickRoughness(float cosineTheta, float3 f0, float roughness)
     return f0 + (max(float3(1.0f - roughness, 1.0f - roughness, 1.0f - roughness), f0) - f0) * pow(1.0f - cosineTheta, 5.0f);
 }
 
-float3 ACESFilm(float3 value)
-{
-    const float a = 2.51f;
-    const float b = 0.03f;
-    const float c = 2.43f;
-    const float d = 0.59f;
-    const float e = 0.14f;
-    return saturate((value * (a * value + b)) / (value * (c * value + d) + e));
-}
-
 float2 DirectionToLatLongUv(float3 direction)
 {
     direction = normalize(direction);
@@ -138,10 +129,15 @@ float2 DirectionToLatLongUv(float3 direction)
     return float2(0.5f + longitude * INV_TWO_PI, latitude * INV_PI);
 }
 
-float3 SampleEnvironment(float3 direction)
+float3 SamplePanorama(Texture2D textureSource, float3 direction)
 {
     float2 uv = DirectionToLatLongUv(direction);
-    return SRGBToLinear(environmentTexture.Sample(materialSampler, uv).rgb);
+    return SRGBToLinear(textureSource.Sample(materialSampler, uv).rgb);
+}
+
+float3 SampleDiffuseEnvironment(float3 direction)
+{
+    return SamplePanorama(iblDiffuseTexture, direction) * iblParams.x;
 }
 
 float2 EnvBRDFApprox(float roughness, float ndotv)
@@ -176,13 +172,14 @@ float3 SampleSpecularEnvironment(float3 reflectionDirection, float3 surfaceNorma
     float3 sampleDirection4 = normalize(reflectionDirection - bitangent * sampleSpread + surfaceNormal * normalBias);
 
     float3 accumulated =
-        SampleEnvironment(sampleDirection0) * 0.36f +
-        SampleEnvironment(sampleDirection1) * 0.16f +
-        SampleEnvironment(sampleDirection2) * 0.16f +
-        SampleEnvironment(sampleDirection3) * 0.16f +
-        SampleEnvironment(sampleDirection4) * 0.16f;
-
-    return accumulated;
+        SamplePanorama(environmentTexture, sampleDirection0) * 0.36f +
+        SamplePanorama(environmentTexture, sampleDirection1) * 0.16f +
+        SamplePanorama(environmentTexture, sampleDirection2) * 0.16f +
+        SamplePanorama(environmentTexture, sampleDirection3) * 0.16f +
+        SamplePanorama(environmentTexture, sampleDirection4) * 0.16f;
+    float3 prefiltered = SamplePanorama(iblSpecularTexture, reflectionDirection);
+    float prefilteredBlend = saturate(roughness * roughness * iblParams.z);
+    return lerp(accumulated, prefiltered, prefilteredBlend) * iblParams.y;
 }
 
 float ComputeShadowVisibility(float3 worldPosition, float3 normal, float3 lightDirection)
@@ -258,13 +255,30 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 lightColor = directionalLightColorAndExposure.rgb;
     float lightIntensity = directionalLightDirectionAndIntensity.w;
     float environmentIntensity = cameraPositionAndEnvironmentIntensity.w;
-    float exposure = directionalLightColorAndExposure.w;
     float3 viewDirection = normalize(cameraPositionAndEnvironmentIntensity.xyz - input.worldPosition);
     float3 halfVector = normalize(lightDirection + viewDirection);
 
     float metallic = saturate(emissiveFactorAndMetallic.w * metallicRoughnessSample.b);
     float roughness = clamp(roughnessUvScaleAlphaCutoff.x * metallicRoughnessSample.g, 0.045f, 1.0f);
     float occlusion = saturate(1.0f + textureControls.y * (occlusionSample.r - 1.0f));
+    float outputAlpha = isAlphaBlend ? baseColor.a : 1.0f;
+    int debugMode = (int)round(postProcessParams.x);
+
+    if (debugMode == 5)
+    {
+        return float4(normal * 0.5f + 0.5f, outputAlpha);
+    }
+
+    if (debugMode == 6)
+    {
+        return float4(roughness.xxx, outputAlpha);
+    }
+
+    if (debugMode == 7)
+    {
+        return float4(metallic.xxx, outputAlpha);
+    }
+
     float ndotl = saturate(dot(normal, lightDirection));
     float ndotv = saturate(dot(normal, viewDirection));
     float hdotv = saturate(dot(halfVector, viewDirection));
@@ -286,7 +300,7 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float shadowVisibility = ComputeShadowVisibility(input.worldPosition, normal, lightDirection);
     float3 directLighting = (kd * albedo / PI + specular) * radiance * ndotl * shadowVisibility;
 
-    float3 diffuseEnvironment = SampleEnvironment(normal);
+    float3 diffuseEnvironment = SampleDiffuseEnvironment(normal);
     float3 reflectionDirection = reflect(-viewDirection, normal);
     float3 roughReflectionDirection = normalize(lerp(reflectionDirection, normal, roughness * roughness * 0.45f));
     float3 specularEnvironment = SampleSpecularEnvironment(roughReflectionDirection, normal, roughness);
@@ -298,8 +312,6 @@ float4 PSMain(PSInput input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
         occlusion *
         environmentIntensity;
     float3 color = ambientDiffuse + ambientSpecular + directLighting + emissive;
-    float3 mapped = ACESFilm(color * exposure);
-    float outputAlpha = isAlphaBlend ? baseColor.a : 1.0f;
 
-    return float4(LinearToSRGB(mapped), outputAlpha);
+    return float4(color, outputAlpha);
 }
